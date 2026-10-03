@@ -17,3 +17,7 @@ def normalize_date(value: str | datetime.date) -> str:
     except ValueError:
         raise ValueError(f"date must be a real calendar date, got {value!r}") from None
     return value
+
+
+def now() -> str:
+    return datetime.datetime.now(datetime.UTC).isoformat()

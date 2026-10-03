@@ -24,10 +24,6 @@ class Settings(BaseSettings):
     bluesky_handle: str = Field(
         default="", description="Bluesky handle, e.g. user.bsky.social"
     )
-    bluesky_app_password: SecretStr = Field(
-        description="Bluesky app password (never commit this)"
-    )
-    bluesky_pds_host: str = Field(default="https://bsky.social")
 
     # Brightcove
     brightcove_account_id: str = Field(

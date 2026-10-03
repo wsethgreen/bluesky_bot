@@ -30,6 +30,10 @@ class NhlService:
             self._brightcove = BrightcoveClient()
         return self._brightcove
 
+    @property
+    def today(self):
+        return self._today()
+
     def _today(self) -> str:
         return (
             datetime.datetime.now(ZoneInfo(self.settings.app_timezone))
@@ -78,6 +82,15 @@ class NhlService:
         """
         plays = await self.client.get_plays(game_id)
         return [p for p in plays if p.type_desc_key == "goal"]
+
+    async def get_player(self, player_id: int) -> dict:
+        """Player landing payload as a raw dict.
+
+        Passthrough to :meth:`NhlClient.get_player` — cache it with
+        ``PlayersRepo`` at the call site rather than here so the service
+        stays free of DynamoDB.
+        """
+        return await self.client.get_player(player_id)
 
     async def get_team_goals_on_date(
         self,

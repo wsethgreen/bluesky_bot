@@ -8,7 +8,6 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from clients.nhl_highlighty_client import NhlHighlightyClient
 
 from config.settings import Settings
 from workers.jobs import poll_nhl_live
@@ -24,7 +23,6 @@ JobFunc = Callable[["WorkerContext"], Awaitable[str]]
 class WorkerContext:
     """Shared deps handed to every job. Built once in lifespan."""
 
-    highlighty: NhlHighlightyClient | None
     settings: Settings
     status: dict[str, dict[str, str | None]] = field(default_factory=dict)
 
