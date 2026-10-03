@@ -8,8 +8,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-
 from clients.nhl_highlighty_client import NhlHighlightyClient
+
 from config.settings import Settings
 from workers.jobs import poll_nhl_live
 
