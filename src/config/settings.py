@@ -4,7 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, computed_field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -47,6 +47,33 @@ class Settings(BaseSettings):
     nhl_team_abbreviation: str = Field(
         default="", description="Team to follow, e.g. CBJ"
     )
+
+    # Postgres: split parts, URLs derived (never store URLs in .env).
+    db_user: str = Field(default="bluesky")
+    db_password: str = Field(description="Matches POSTGRES_PASSWORD in compose")
+    db_name: str = Field(default="bluesky_bot")
+    db_host: str = Field(
+        default="db", description="'db' in compose, 'localhost' on the host"
+    )
+    db_port: int = Field(default=5432)
+
+    @computed_field
+    @property
+    def db_url(self) -> str:
+        """Runtime URL (inside containers db_host is the compose service)."""
+        return (
+            f"postgresql+asyncpg://{self.db_user}:{self.db_password}"
+            f"@{self.db_host}:{self.db_port}/{self.db_name}"
+        )
+
+    @computed_field
+    @property
+    def db_migration_url(self) -> str:
+        """Host-side URL for alembic (via published 127.0.0.1:5432)."""
+        return (
+            f"postgresql+asyncpg://{self.db_user}:{self.db_password}"
+            f"@localhost:{self.db_port}/{self.db_name}"
+        )
 
     # App
     log_level: str = Field(default="INFO")

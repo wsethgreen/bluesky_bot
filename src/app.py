@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.responses import RedirectResponse
 
 from config.settings import get_settings
 from routes.nhl.goals import router as nhl_goals_router
@@ -40,6 +41,11 @@ app = FastAPI(
         {"name": "nhl", "description": "Official NHL Web API."},
     ],
 )
+
+
+@app.get("/")
+async def root(request: Request):
+    return RedirectResponse(url="/docs")
 
 
 @app.get("/health", tags=["system"], summary="Service health")

@@ -1,12 +1,60 @@
 services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    # Only POSTGRES_* here — do NOT attach the app .env, it would leak
+    # app secrets into the postgres container env.
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-bluesky_bot}
+      POSTGRES_USER: ${POSTGRES_USER:-bluesky}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Localhost-only so alembic on the host can reach the DB for migrations
+    # without exposing Postgres to the LAN.
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    # Keep Postgres small on a Pi. Tune to your model (Pi 4 4GB / Pi 5 8GB).
+    mem_limit: 512m
+    cpus: 1.0
+
   app:
     build: .
+    depends_on:
+      db:
+        condition: service_healthy
     ports:
       - "8000:8000"
     # Values come from your local .env (never baked into the image).
     env_file:
       - .env
+    environment:
+      # Single scheduler owns timers; API never runs background jobs.
+      RUN_WORKERS: "0"
+      BLUESKY_HANDLE: c-bot-j.bsky.social
+      BRIGHTCOVE_BASE_URL: https://edge.api.brightcove.com/playback/v1
+      # NHL APIs
+      NHL_WEB_API_BASE_URL: https://api-web.nhle.com
+      NHL_STATS_API_BASE_URL: https://api.nhle.com/stats/rest
+      NHL_TEAM_ABBREVIATION: CBJ
+      NHL_TEAM_ID: 28
+      HTTP_TIMEOUT: 10.0
+      HTTP_MAX_RETRIES: 3
+      HTTP_BACKOFF_FACTOR: 0.5
+      LOG_LEVEL: INFO
+
     restart: unless-stopped
+    command: ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", "--app-dir", "src"]
     healthcheck:
       test:
         [
@@ -17,3 +65,38 @@ services:
         ]
       interval: 30s
       start_period: 20s
+
+  scheduler:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      RUN_WORKERS: "1"
+    restart: unless-stopped
+    # Singleton: never scale this past 1. Timers fire here only.
+    # NOTE: entrypoint not implemented yet (next step: python -m workers.run).
+    command: ["python", "-m", "workers.run", "--scheduler"]
+
+  worker:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      RUN_WORKERS: "1"
+    restart: unless-stopped
+    # Competing consumers: scale with `docker compose up --scale worker=3`.
+    # Claims jobs via Postgres (INSERT ... ON CONFLICT DO NOTHING /
+    # SELECT ... FOR UPDATE SKIP LOCKED) so duplicates are impossible.
+    # NOTE: entrypoint not implemented yet (next step: python -m workers.run).
+    command: ["python", "-m", "workers.run", "--worker"]
+    mem_limit: 256m
+    cpus: 0.5
+
+volumes:
+  pgdata:

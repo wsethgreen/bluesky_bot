@@ -7,6 +7,7 @@ WORKDIR /app
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    PYTHONPATH="/app/src" \
     PATH="/app/.venv/bin:$PATH"
 
 # Install dependencies first (better layer caching). --no-install-project
