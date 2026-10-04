@@ -26,7 +26,6 @@ class Post(Base):
     posted: Mapped[bool] = mapped_column(
         nullable=False, default=False, server_default=false(), index=True
     )
-    bsky_uri: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

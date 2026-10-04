@@ -8,9 +8,11 @@ from zoneinfo import ZoneInfo
 
 from clients.brightcove_client import BrightcoveClient
 from clients.nhl_client import NhlClient
+from clients.nhl_stats_client import NhlStatsClient
 from config.settings import get_settings
 from models.brightcove import BrightcoveVideo
 from models.nhl import NhlPlay, NhlScheduleGame, NhlScheduleResponse
+from models.nhl_stats import NhlStatsTeam
 from utils.date import normalize_date
 
 
@@ -20,6 +22,7 @@ class NhlService:
     def __init__(self) -> None:
         self.settings = get_settings()
         self.client = NhlClient(base_url=self.settings.nhl_web_api_base_url)
+        self.stats = NhlStatsClient(base_url=self.settings.nhl_stats_api_base_url)
         self._brightcove: BrightcoveClient | None = None
 
     @property
@@ -91,6 +94,14 @@ class NhlService:
         stays free of DynamoDB.
         """
         return await self.client.get_player(player_id)
+
+    async def get_team(self, team_id: int) -> NhlStatsTeam | None:
+        """Team directory entry by numeric id.
+
+        Passthrough to :meth:`NhlStatsClient.get_team` — ``None`` when the
+        Stats API returns no rows.
+        """
+        return await self.stats.get_team(team_id)
 
     async def get_team_goals_on_date(
         self,

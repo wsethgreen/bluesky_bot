@@ -6,6 +6,7 @@ import datetime
 
 from clients.http_client import HttpClient
 from models.nhl import NhlPlay, NhlPlayByPlay, NhlScheduleResponse
+from models.player import NhlPlayer
 from utils.date import normalize_date
 
 DEFAULT_BASE_URL = "https://api-web.nhle.com"
@@ -61,3 +62,12 @@ class NhlClient:
             raise ValueError(f"player_id must be positive, got {player_id!r}")
         response = await self.http.get(f"{self.base_url}/v1/player/{player_id}/landing")
         return response.json()
+
+    async def get_player_summary(self, player_id: int) -> NhlPlayer:
+        """Typed subset of the landing payload (names, team, season stats).
+
+        ``GET /v1/player/{player}/landing`` — same payload as
+        :meth:`get_player`, flattened into :class:`NhlPlayer` so callers
+        don't wade through the full landing shape.
+        """
+        return NhlPlayer.model_validate(await self.get_player(player_id))
