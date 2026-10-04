@@ -1,19 +1,14 @@
 services:
   db:
     image: postgres:16-alpine
-    restart: unless-stopped
-    # Only POSTGRES_* here — do NOT attach the app .env, it would leak
-    # app secrets into the postgres container env.
+    ports:
+      - "5432:5432"
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-bluesky_bot}
-      POSTGRES_USER: ${POSTGRES_USER:-bluesky}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
     volumes:
       - pgdata:/var/lib/postgresql/data
-    # Localhost-only so alembic on the host can reach the DB for migrations
-    # without exposing Postgres to the LAN.
-    ports:
-      - "127.0.0.1:5432:5432"
     healthcheck:
       test:
         [
@@ -24,15 +19,30 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
-    # Keep Postgres small on a Pi. Tune to your model (Pi 4 4GB / Pi 5 8GB).
-    mem_limit: 512m
-    cpus: 1.0
+
+  migrate:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      # .env sets DB_HOST=localhost for host-side runs; inside the compose
+      # network the DB is reachable as `db`.
+      DB_HOST: db
+    # Run-once init container: applies pending migrations, then exits 0.
+    # Requires the alembic scaffold (alembic.ini at repo root, env.py on db_url).
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
 
   app:
     build: .
     depends_on:
       db:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     ports:
       - "8000:8000"
     # Values come from your local .env (never baked into the image).
@@ -41,17 +51,6 @@ services:
     environment:
       # Single scheduler owns timers; API never runs background jobs.
       RUN_WORKERS: "0"
-      BLUESKY_HANDLE: c-bot-j.bsky.social
-      BRIGHTCOVE_BASE_URL: https://edge.api.brightcove.com/playback/v1
-      # NHL APIs
-      NHL_WEB_API_BASE_URL: https://api-web.nhle.com
-      NHL_STATS_API_BASE_URL: https://api.nhle.com/stats/rest
-      NHL_TEAM_ABBREVIATION: CBJ
-      NHL_TEAM_ID: 28
-      HTTP_TIMEOUT: 10.0
-      HTTP_MAX_RETRIES: 3
-      HTTP_BACKOFF_FACTOR: 0.5
-      LOG_LEVEL: INFO
 
     restart: unless-stopped
     command: ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", "--app-dir", "src"]
@@ -71,6 +70,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     env_file:
       - .env
     environment:
@@ -85,6 +86,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     env_file:
       - .env
     environment:

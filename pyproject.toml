@@ -9,10 +9,11 @@ authors = [
 requires-python = ">=3.14"
 dependencies = [
     "alembic==1.20.0",
-    "asyncpg>=0.31.0",
+    "asyncpg==0.31.0",
     "atproto==0.0.72",
     "boto3==1.43.108",
     "fastapi==0.142.1",
+    "greenlet>=3.5.6",
     "httpx2==2.13.1",
     "pydantic==2.13.5",
     "pydantic-settings==2.15.0",

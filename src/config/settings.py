@@ -1,20 +1,16 @@
 """Application settings loaded from environment / .env file."""
 
 from functools import lru_cache
-from pathlib import Path
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import Field, SecretStr, computed_field, field_validator
+from pydantic import Field, SecretStr, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
     """Single source of truth for config. Values come from env vars or .env."""
 
     model_config = SettingsConfigDict(
-        env_file=(str(_PROJECT_ROOT / ".env"), ".env"),
+        env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
@@ -48,32 +44,18 @@ class Settings(BaseSettings):
         default="", description="Team to follow, e.g. CBJ"
     )
 
-    # Postgres: split parts, URLs derived (never store URLs in .env).
-    db_user: str = Field(default="bluesky")
-    db_password: str = Field(description="Matches POSTGRES_PASSWORD in compose")
-    db_name: str = Field(default="bluesky_bot")
-    db_host: str = Field(
-        default="db", description="'db' in compose, 'localhost' on the host"
-    )
+    # Database
+    db_user: str
+    db_password: str
+    db_name: str
+    db_host: str
     db_port: int = Field(default=5432)
 
     @computed_field
     @property
-    def db_url(self) -> str:
-        """Runtime URL (inside containers db_host is the compose service)."""
-        return (
-            f"postgresql+asyncpg://{self.db_user}:{self.db_password}"
-            f"@{self.db_host}:{self.db_port}/{self.db_name}"
-        )
-
-    @computed_field
-    @property
     def db_migration_url(self) -> str:
-        """Host-side URL for alembic (via published 127.0.0.1:5432)."""
-        return (
-            f"postgresql+asyncpg://{self.db_user}:{self.db_password}"
-            f"@localhost:{self.db_port}/{self.db_name}"
-        )
+        # Honors db_host: localhost on the host, `db` inside compose.
+        return f"postgresql+asyncpg://{self.db_user}:{self.db_password}@{self.db_host}:{self.db_port}/{self.db_name}"
 
     # App
     log_level: str = Field(default="INFO")
@@ -85,15 +67,6 @@ class Settings(BaseSettings):
         default="America/Toronto",
         description="IANA timezone used when 'today' needs a date, e.g. /matches/today",
     )
-
-    @field_validator("app_timezone")
-    @classmethod
-    def _valid_timezone(cls, v: str) -> str:
-        try:
-            ZoneInfo(v)
-        except (ZoneInfoNotFoundError, ValueError) as exc:
-            raise ValueError(f"Invalid IANA timezone: {v!r}") from exc
-        return v
 
 
 @lru_cache
