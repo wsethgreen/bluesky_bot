@@ -7,6 +7,7 @@ WORKDIR /app
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    PYTHONPATH="/app/src" \
     PATH="/app/.venv/bin:$PATH"
 
 # Install dependencies first (better layer caching). --no-install-project
@@ -17,6 +18,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev --no-install-project
 
 COPY src/ ./src/
+COPY alembic.ini ./
+COPY migrations/ ./migrations/
 
 RUN useradd --create-home --uid 10001 appuser \
     && chown -R appuser:appuser /app
@@ -24,5 +27,4 @@ USER appuser
 
 EXPOSE 8000
 
-# Single worker: the background scheduler must exist exactly once.
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", "--app-dir", "src"]

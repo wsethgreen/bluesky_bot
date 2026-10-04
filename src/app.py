@@ -7,10 +7,13 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.responses import RedirectResponse
 
 from config.settings import get_settings
 from routes.nhl.goals import router as nhl_goals_router
+from routes.nhl.players import router as nhl_players_router
 from routes.nhl.schedule import router as nhl_schedule_router
+from routes.nhl.teams import router as nhl_teams_router
 from routes.nhl.videos import router as nhl_videos_router
 from services.nhl_service import NhlService
 
@@ -27,6 +30,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         service = app.state.nhl_service
         if service is not None:
             await service.client.http.aclose()
+            await service.stats.http.aclose()
 
 
 app = FastAPI(
@@ -41,6 +45,11 @@ app = FastAPI(
 )
 
 
+@app.get("/")
+async def root(request: Request):
+    return RedirectResponse(url="/docs")
+
+
 @app.get("/health", tags=["system"], summary="Service health")
 async def health(request: Request) -> dict[str, object]:
     """Liveness probe."""
@@ -53,5 +62,7 @@ async def health(request: Request) -> dict[str, object]:
 
 
 app.include_router(nhl_schedule_router)
+app.include_router(nhl_teams_router)
 app.include_router(nhl_videos_router)
 app.include_router(nhl_goals_router)
+app.include_router(nhl_players_router)

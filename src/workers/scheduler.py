@@ -8,9 +8,10 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from clients.nhl_highlighty_client import NhlHighlightyClient
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from config.settings import Settings
+from services.nhl_service import NhlService
 from workers.jobs import poll_nhl_live
 
 logger = logging.getLogger(__name__)
@@ -24,8 +25,9 @@ JobFunc = Callable[["WorkerContext"], Awaitable[str]]
 class WorkerContext:
     """Shared deps handed to every job. Built once in lifespan."""
 
-    highlighty: NhlHighlightyClient | None
     settings: Settings
+    nhl: NhlService
+    sessions: async_sessionmaker[AsyncSession]
     status: dict[str, dict[str, str | None]] = field(default_factory=dict)
 
 

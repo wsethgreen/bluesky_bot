@@ -1,20 +1,16 @@
 """Application settings loaded from environment / .env file."""
 
 from functools import lru_cache
-from pathlib import Path
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
     """Single source of truth for config. Values come from env vars or .env."""
 
     model_config = SettingsConfigDict(
-        env_file=(str(_PROJECT_ROOT / ".env"), ".env"),
+        env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
@@ -24,10 +20,6 @@ class Settings(BaseSettings):
     bluesky_handle: str = Field(
         default="", description="Bluesky handle, e.g. user.bsky.social"
     )
-    bluesky_app_password: SecretStr = Field(
-        description="Bluesky app password (never commit this)"
-    )
-    bluesky_pds_host: str = Field(default="https://bsky.social")
 
     # Brightcove
     brightcove_account_id: str = Field(
@@ -52,6 +44,19 @@ class Settings(BaseSettings):
         default="", description="Team to follow, e.g. CBJ"
     )
 
+    # Database
+    db_user: str
+    db_password: str
+    db_name: str
+    db_host: str
+    db_port: int = Field(default=5432)
+
+    @computed_field
+    @property
+    def db_migration_url(self) -> str:
+        # Honors db_host: localhost on the host, `db` inside compose.
+        return f"postgresql+asyncpg://{self.db_user}:{self.db_password}@{self.db_host}:{self.db_port}/{self.db_name}"
+
     # App
     log_level: str = Field(default="INFO")
     env: str = Field(default="dev")
@@ -62,15 +67,6 @@ class Settings(BaseSettings):
         default="America/Toronto",
         description="IANA timezone used when 'today' needs a date, e.g. /matches/today",
     )
-
-    @field_validator("app_timezone")
-    @classmethod
-    def _valid_timezone(cls, v: str) -> str:
-        try:
-            ZoneInfo(v)
-        except (ZoneInfoNotFoundError, ValueError) as exc:
-            raise ValueError(f"Invalid IANA timezone: {v!r}") from exc
-        return v
 
 
 @lru_cache
