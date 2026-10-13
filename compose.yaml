@@ -51,6 +51,9 @@ services:
     environment:
       # Single scheduler owns timers; API never runs background jobs.
       RUN_WORKERS: "0"
+      # .env sets DB_HOST=localhost for host-side runs; inside the compose
+      # network the DB is reachable as `db`.
+      DB_HOST: db
 
     restart: unless-stopped
     command: ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", "--app-dir", "src"]
@@ -76,30 +79,11 @@ services:
       - .env
     environment:
       RUN_WORKERS: "1"
+      DB_HOST: db
     restart: unless-stopped
-    # Singleton: never scale this past 1. Timers fire here only.
-    # NOTE: entrypoint not implemented yet (next step: python -m workers.run).
+    # Singleton: never scale past 1. Owns all timers: daily game-day check
+    # gates the poll/poster intervals (paused on off-days).
     command: ["python", "-m", "workers.run", "--scheduler"]
-
-  worker:
-    build: .
-    depends_on:
-      db:
-        condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
-    env_file:
-      - .env
-    environment:
-      RUN_WORKERS: "1"
-    restart: unless-stopped
-    # Competing consumers: scale with `docker compose up --scale worker=3`.
-    # Claims jobs via Postgres (INSERT ... ON CONFLICT DO NOTHING /
-    # SELECT ... FOR UPDATE SKIP LOCKED) so duplicates are impossible.
-    # NOTE: entrypoint not implemented yet (next step: python -m workers.run).
-    command: ["python", "-m", "workers.run", "--worker"]
-    mem_limit: 256m
-    cpus: 0.5
 
 volumes:
   pgdata:

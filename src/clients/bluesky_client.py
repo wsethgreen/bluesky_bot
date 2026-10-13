@@ -22,7 +22,7 @@ class BlueskyClient:
         settings = get_settings()
         self._username = settings.bluesky_handle
         self._password = settings.bluesky_app_password.get_secret_value()
-        self.client = AsyncClient(base_url=settings.bluesky_pds_host)
+        self.client = AsyncClient()
 
     async def _login(self) -> None:
         logger.info("logging into bsky")

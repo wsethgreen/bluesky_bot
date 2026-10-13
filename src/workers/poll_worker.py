@@ -3,16 +3,16 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from db.models.games import Game
-from db.models.goals import Goal
-from db.models.posts import Post
-from db.models.teams import Team
 from models.nhl import NhlPlay, NhlScheduleGame, NhlScheduleTeam
+from repos.games_repo import GamesRepo
+from repos.goals_repo import GoalsRepo
+from repos.posts_repo import PostsRepo
+from repos.teams_repo import TeamsRepo
 from services.nhl_service import NhlService
 
 logger = logging.getLogger(__name__)
@@ -71,42 +71,36 @@ class PollWorker:
         """Upsert teams/game/goals, claim unseen clips. Returns new clip count."""
         assert game.id is not None
         async with self._sessions() as session:
+            teams = TeamsRepo(session)
+            games = GamesRepo(session)
+            goals_repo = GoalsRepo(session)
+            posts = PostsRepo(session)
             for side in (game.away_team, game.home_team):
-                await self._upsert_team(session, side)
-            await session.merge(self._build_game(game))
-            clips = await self._upsert_goals(session, game.id, goals)
-            new_clips = await self._claim_clips(session, game.id, clips)
+                await self._upsert_team(teams, side)
+            await games.upsert_game(self._build_game(game))
+            clips = await self._upsert_goals(goals_repo, game.id, goals)
+            new_clips = await self._claim_clips(posts, game.id, clips)
             await session.commit()
             return new_clips
 
     async def _upsert_team(
-        self, session: AsyncSession, side: NhlScheduleTeam | None
+        self, teams: TeamsRepo, side: NhlScheduleTeam | None
     ) -> None:
         if side is None or side.id is None:
             return
         stats = await self._nhl.get_team(side.id)
-        if stats is None or stats.id is None:
-            return
-        await session.merge(
-            Team(
-                id=stats.id,
-                franchise_id=stats.franchise_id or 0,
-                full_name=stats.full_name or "",
-                league_id=stats.league_id or 0,
-                raw_tri_code=stats.raw_tri_code or "",
-                tri_code=stats.tri_code or "",
-            )
-        )
+        await teams.upsert_from_stats(stats)
 
     def _build_game(self, game: NhlScheduleGame) -> Game:
         assert game.id is not None
         assert game.away_team and game.away_team.id is not None
         assert game.home_team and game.home_team.id is not None
-        start = (
-            datetime.fromisoformat(game.start_time_utc)
-            if game.start_time_utc
-            else datetime.now().astimezone()
-        )
+        if game.start_time_utc:
+            start = datetime.fromisoformat(game.start_time_utc)
+            if start.tzinfo is None:
+                start = start.replace(tzinfo=UTC)
+        else:
+            start = datetime.now(UTC)
         return Game(
             game_id=game.id,
             season=game.season or 0,
@@ -121,53 +115,22 @@ class PollWorker:
         )
 
     async def _upsert_goals(
-        self, session: AsyncSession, game_id: int, plays: list[NhlPlay]
+        self, goals_repo: GoalsRepo, game_id: int, plays: list[NhlPlay]
     ) -> dict[int, int]:
-        """Merge goal rows. Returns {highlight_clip: event_id}."""
+        """Upsert goal rows. Returns {highlight_clip: event_id}."""
         clips: dict[int, int] = {}
         for play in plays:
-            details = play.details
-            if details is None or play.event_id is None:
-                continue
-            await session.merge(
-                Goal(
-                    game_id=game_id,
-                    event_id=play.event_id,
-                    period_number=play.period.number if play.period else 0,
-                    time_in_period=play.time_in_period or "",
-                    time_remaining=play.time_remaining or "",
-                    scoring_player_id=details.scoring_player_id,
-                    assist1_player_id=details.assist1_player_id,
-                    assist2_player_id=details.assist2_player_id,
-                    away_score=details.away_score or 0,
-                    home_score=details.home_score or 0,
-                    highlight_clip_id=details.highlight_clip,
-                )
-            )
-            if details.highlight_clip is not None:
-                clips[details.highlight_clip] = play.event_id
+            goal = await goals_repo.upsert_from_play(game_id, play)
+            if goal is not None and goal.highlight_clip_id is not None:
+                clips[goal.highlight_clip_id] = goal.event_id
         return clips
 
     async def _claim_clips(
-        self, session: AsyncSession, game_id: int, clips: dict[int, int]
+        self, posts: PostsRepo, game_id: int, clips: dict[int, int]
     ) -> int:
         """Insert unposted Post rows for unseen clips. Returns new row count."""
-        if not clips:
-            return 0
-        seen = set(
-            (await session.execute(select(Post.post_id).where(Post.post_id.in_(clips))))
-            .scalars()
-            .all()
-        )
-        fresh = {clip: event for clip, event in clips.items() if clip not in seen}
-        for clip, event_id in fresh.items():
-            session.add(
-                Post(
-                    post_id=clip,
-                    game_id=game_id,
-                    event_id=event_id,
-                    team=self._team,
-                    posted=False,
-                )
-            )
-        return len(fresh)
+        new_clips = 0
+        for clip_id, event_id in clips.items():
+            if await posts.claim_pending(clip_id, game_id, self._team, event_id):
+                new_clips += 1
+        return new_clips
