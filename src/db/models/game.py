@@ -3,22 +3,24 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, ForeignKey, String, func
+from sqlalchemy import BigInteger, DateTime, ForeignKey, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db.models.base import Base
 
 if TYPE_CHECKING:
-    from db.models.goals import Goal
-    from db.models.posts import Post
-    from db.models.teams import Team
+    from db.models.goal import Goal
+    from db.models.post import Post
+    from db.models.team import Team
 
 
 class Game(Base):
     __tablename__ = "games"
 
     # Natural key: NHL-assigned id, always supplied on insert.
-    game_id: Mapped[int] = mapped_column(primary_key=True, autoincrement=False)
+    game_id: Mapped[int] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=False
+    )
     season: Mapped[int] = mapped_column(nullable=False)
     game_type: Mapped[int] = mapped_column(nullable=False)
     start_time: Mapped[datetime] = mapped_column(

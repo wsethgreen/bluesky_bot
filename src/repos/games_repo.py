@@ -8,8 +8,8 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models.games import Game
-from db.models.teams import Team
+from db.models.game import Game
+from db.models.team import Team
 from utils.date import normalize_date
 
 

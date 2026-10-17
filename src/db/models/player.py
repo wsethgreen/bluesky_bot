@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Integer, String, func
+from sqlalchemy import BigInteger, Boolean, DateTime, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from db.models.base import Base
@@ -14,7 +14,9 @@ class Player(Base):
     __tablename__ = "players"
 
     # Natural key: NHL-assigned id, always supplied on insert.
-    player_id: Mapped[int] = mapped_column(primary_key=True, autoincrement=False)
+    player_id: Mapped[int] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=False
+    )
     first_name: Mapped[str] = mapped_column(String(100), nullable=False, default="")
     last_name: Mapped[str] = mapped_column(String(100), nullable=False, default="")
     team_full_name: Mapped[str] = mapped_column(String(100), nullable=False, default="")

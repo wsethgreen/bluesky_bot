@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models.players import Player
+from db.models.player import Player
 from models.player import NhlPlayer
 
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models.goals import Goal
+from db.models.goal import Goal
 from models.nhl import NhlPlay
 
 

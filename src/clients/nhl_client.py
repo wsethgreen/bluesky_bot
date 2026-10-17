@@ -37,18 +37,23 @@ class NhlClient:
         response = await self.http.get(f"{self.base_url}/v1/schedule/{day}")
         return NhlScheduleResponse.model_validate(response.json())
 
-    async def get_plays(self, game_id: int) -> list[NhlPlay]:
-        """All plays for a game.
+    async def get_play_by_play(self, game_id: int) -> NhlPlayByPlay:
+        """Full play-by-play payload for a game (top-level state + plays).
 
-        ``GET /v1/gamecenter/{game-id}/play-by-play`` — every faceoff,
-        shot, hit, penalty, and goal in ``sortOrder`` sequence.
+        ``GET /v1/gamecenter/{game-id}/play-by-play`` — prefer this over
+        :meth:`get_plays` when you also need the top-level ``gameState``,
+        so one request serves both.
         """
         if game_id <= 0:
             raise ValueError(f"game_id must be positive, got {game_id!r}")
         response = await self.http.get(
             f"{self.base_url}/v1/gamecenter/{game_id}/play-by-play"
         )
-        return NhlPlayByPlay.model_validate(response.json()).plays
+        return NhlPlayByPlay.model_validate(response.json())
+
+    async def get_plays(self, game_id: int) -> list[NhlPlay]:
+        """All plays for a game, in ``sortOrder`` sequence."""
+        return (await self.get_play_by_play(game_id)).plays
 
     async def get_player(self, player_id: int) -> dict:
         """Player landing page as a raw dict.

@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models.posts import Post
+from db.models.post import Post
 
 
 class PostsRepo:
@@ -27,6 +27,8 @@ class PostsRepo:
         game_id: int,
         team: str,
         event_id: int | None = None,
+        text: str = "",
+        highlight_url: str | None = None,
     ) -> bool:
         """Insert as unposted if new. Returns True when inserted, False if seen."""
         result = await self.session.execute(
@@ -36,6 +38,8 @@ class PostsRepo:
                 game_id=game_id,
                 event_id=event_id,
                 team=team,
+                text=text,
+                highlight_url=highlight_url,
                 posted=False,
             )
             .on_conflict_do_nothing(index_elements=["post_id"])

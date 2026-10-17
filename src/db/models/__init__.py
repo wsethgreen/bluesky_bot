@@ -1,9 +1,9 @@
 from db.models.base import Base
-from db.models.games import Game
-from db.models.goals import Goal
-from db.models.players import Player
-from db.models.posts import Post
-from db.models.teams import Team
+from db.models.game import Game
+from db.models.goal import Goal
+from db.models.player import Player
+from db.models.post import Post
+from db.models.team import Team
 
 __all__ = [
     "Base",
