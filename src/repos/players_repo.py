@@ -11,10 +11,8 @@ from models.player import NhlPlayer
 class PlayersRepo:
     """Persisted player snapshots (flattened landing payloads).
 
-    The old Dynamo version was a TTL cache of raw payloads; the Postgres
-    table stores the flattened snapshot instead, with ``updated_at``
-    tracking freshness. Owns no transactions: methods flush but never
-    commit, so callers control commit/rollback boundaries.
+    Owns no transactions: methods flush but never commit, so callers
+    control commit/rollback boundaries.
     """
 
     def __init__(self, session: AsyncSession) -> None:
