@@ -17,14 +17,13 @@ class Settings(BaseSettings):
     )
 
     # Bluesky
-    bluesky_handle: str = Field(
-        default="", description="Bluesky handle, e.g. user.bsky.social"
+    bluesky_handle: str = Field(description="Bluesky handle, e.g. user.bsky.social")
+    bluesky_app_password: SecretStr = Field(
+        default=SecretStr(""), description="Brightcove playback policy key"
     )
 
     # Brightcove
-    brightcove_account_id: str = Field(
-        default="6415718365001", description="Brightcove account ID"
-    )
+    brightcove_account_id: str = Field(description="Brightcove account ID")
     brightcove_base_url: str = Field(description="The brightcove API base URL")
     brightcove_policy_key: SecretStr = Field(
         default=SecretStr(""), description="Brightcove playback policy key"
@@ -36,17 +35,15 @@ class Settings(BaseSettings):
     http_backoff_factor: float = Field(default=0.5, ge=0)
 
     # NHL APIs (see nhl-api.md)
-    nhl_web_api_base_url: str = Field(description="")
-    nhl_stats_api_base_url: str = Field(description="")
+    nhl_web_api_base_url: str = Field(description="Base NHL web API URL")
+    nhl_stats_api_base_url: str = Field(description="Base NHL stats API URL")
 
     # NHL team focus
-    nhl_team_abbreviation: str = Field(
-        default="", description="Team to follow, e.g. CBJ"
-    )
+    nhl_team_abbreviation: str = Field(description="Team to follow, e.g. CBJ")
 
     # Database
     db_user: str
-    db_password: str
+    db_password: SecretStr
     db_name: str
     db_host: str
     db_port: int = Field(default=5432)
@@ -55,7 +52,7 @@ class Settings(BaseSettings):
     @property
     def db_migration_url(self) -> str:
         # Honors db_host: localhost on the host, `db` inside compose.
-        return f"postgresql+asyncpg://{self.db_user}:{self.db_password}@{self.db_host}:{self.db_port}/{self.db_name}"
+        return f"postgresql+asyncpg://{self.db_user}:{self.db_password.get_secret_value()}@{self.db_host}:{self.db_port}/{self.db_name}"
 
     # App
     log_level: str = Field(default="INFO")
@@ -67,6 +64,13 @@ class Settings(BaseSettings):
         default="America/Toronto",
         description="IANA timezone used when 'today' needs a date, e.g. /matches/today",
     )
+
+    # Scheduler (Compose+APScheduler singleton). Daily checker decides
+    # whether the poll/poster intervals run.
+    game_day_check_hour: int = Field(default=9, ge=0, le=23)
+    game_day_check_minute: int = Field(default=0, ge=0, le=59)
+    poll_interval_minutes: int = Field(default=5, ge=1)
+    post_interval_minutes: int = Field(default=2, ge=1)
 
 
 @lru_cache

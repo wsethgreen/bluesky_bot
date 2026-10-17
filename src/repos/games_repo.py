@@ -1,51 +1,62 @@
-"""DynamoDB access for the games table (PK: game_id NUMBER)."""
+"""Postgres access for the games table (PK: game_id INTEGER)."""
 
 from __future__ import annotations
 
-import os
+import datetime as dt
+from zoneinfo import ZoneInfo
 
-import boto3
-from boto3.dynamodb.conditions import Attr
+from sqlalchemy import or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from utils.date import now
+from db.models.game import Game
+from db.models.team import Team
+from utils.date import normalize_date
 
 
 class GamesRepo:
-    """Upsert + fetch for tracked NHL games."""
+    """Tracked NHL games.
 
-    def __init__(self, table_name: str | None = None) -> None:
-        name = table_name or os.environ["GAMES_TABLE_NAME"]
-        self.table = boto3.resource("dynamodb").Table(name)
+    Owns no transactions: methods flush but never commit, so callers
+    (workers, routes) control commit/rollback boundaries.
+    """
 
-    def upsert_game(
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def upsert_game(self, game: Game) -> Game:
+        """Insert or update a game row. Returns the managed instance."""
+        return await self.session.merge(game)
+
+    async def get_game(self, game_id: int) -> Game | None:
+        return await self.session.get(Game, game_id)
+
+    async def get_game_by_date(
         self,
-        game_id: int,
-        date: str,
-        team: str,
-        game_state: str | None = None,
-        raw: dict | None = None,
-    ) -> None:
-        self.table.put_item(
-            Item={
-                "game_id": game_id,
-                "date": date,
-                "team": team,
-                "game_state": game_state,
-                "raw": raw or {},
-                "updated_at": now(),
-            }
-        )
+        day: str | dt.date,
+        team_abbrev: str,
+        tz: str = "America/Toronto",
+    ) -> Game | None:
+        """The team's game on a calendar day in ``tz`` (defaults to app tz).
 
-    def get_game(self, game_id: int) -> dict | None:
-        resp = self.table.get_item(Key={"game_id": game_id})
-        return resp.get("Item")
-
-    def get_game_by_date(self, date: str, team: str) -> dict | None:
-        """Cached game row for a date, if already stored. Scan is fine at
-        ~84 rows/season; add a GSI on date if this table ever grows large."""
-        resp = self.table.scan(
-            FilterExpression=Attr("date").eq(date) & Attr("team").eq(team),
-            Limit=1,
+        Bounds ``start_time`` to the local day instead of truncating the
+        timestamp in the DB, so late-UTC games land on the correct local date.
+        """
+        day_iso = normalize_date(day)
+        day_start = dt.datetime.combine(
+            dt.date.fromisoformat(day_iso), dt.time.min, tzinfo=ZoneInfo(tz)
         )
-        items = resp.get("Items", [])
-        return items[0] if items else None
+        team = team_abbrev.strip().upper()
+        result = await self.session.execute(
+            select(Game)
+            .where(
+                Game.start_time >= day_start,
+                Game.start_time < day_start + dt.timedelta(days=1),
+            )
+            .where(
+                or_(
+                    Game.away_team.has(Team.tri_code == team),
+                    Game.home_team.has(Team.tri_code == team),
+                )
+            )
+        )
+        return result.scalars().first()

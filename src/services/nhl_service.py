@@ -86,6 +86,25 @@ class NhlService:
         plays = await self.client.get_plays(game_id)
         return [p for p in plays if p.type_desc_key == "goal"]
 
+    async def get_live_goals(
+        self, game_id: int, team_id: int
+    ) -> tuple[str | None, list[NhlPlay]]:
+        """One play-by-play fetch: top-level game state + the team's goals.
+
+        The worker's steady-state path — a single request replaces the
+        schedule lookup (game identity comes from the DB row) and the
+        separate state refresh.
+        """
+        pbp = await self.client.get_play_by_play(game_id)
+        goals = [
+            p
+            for p in pbp.plays
+            if p.type_desc_key == "goal"
+            and p.details is not None
+            and p.details.event_owner_team_id == team_id
+        ]
+        return pbp.game_state, goals
+
     async def get_player(self, player_id: int) -> dict:
         """Player landing payload as a raw dict.
 

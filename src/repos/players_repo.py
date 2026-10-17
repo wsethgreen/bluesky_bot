@@ -1,37 +1,32 @@
-"""DynamoDB access for the players table (PK: player_id NUMBER, TTL: ttl)."""
+"""Postgres access for the players table (PK: player_id INTEGER)."""
 
 from __future__ import annotations
 
-import os
-import time
+from sqlalchemy.ext.asyncio import AsyncSession
 
-import boto3
-
-from utils.date import now
+from db.models.player import Player
+from models.player import NhlPlayer
 
 
 class PlayersRepo:
-    """Small read-through cache so we don't hit the NHL player API per poll."""
+    """Persisted player snapshots (flattened landing payloads).
 
-    def __init__(self, table_name: str | None = None) -> None:
-        name = table_name or os.environ["PLAYERS_TABLE_NAME"]
-        self.table = boto3.resource("dynamodb").Table(name)
+    Owns no transactions: methods flush but never commit, so callers
+    control commit/rollback boundaries.
+    """
 
-    def get_player(self, player_id: int) -> dict | None:
-        resp = self.table.get_item(Key={"player_id": player_id})
-        return resp.get("Item")
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
 
-    def cache_player(
-        self,
-        player_id: int,
-        data: dict,
-        ttl_days: int = 30,
-    ) -> None:
-        self.table.put_item(
-            Item={
-                "player_id": player_id,
-                "data": data,
-                "cached_at": now(),
-                "ttl": int(time.time()) + ttl_days * 86400,
-            }
-        )
+    async def get_player(self, player_id: int) -> Player | None:
+        return await self.session.get(Player, player_id)
+
+    async def upsert_player(self, player: Player) -> Player:
+        """Insert or update a snapshot row. Returns the managed instance."""
+        return await self.session.merge(player)
+
+    async def upsert_from_summary(self, summary: NhlPlayer) -> Player:
+        """Build a snapshot from a validated landing summary and upsert it."""
+        if summary.player_id is None:
+            raise ValueError("NhlPlayer has no player_id")
+        return await self.upsert_player(Player(**summary.model_dump()))

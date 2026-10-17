@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import httpx2
 from fastapi import APIRouter, Depends, HTTPException, Path
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from db.session import get_async_session
+from models.player import NhlPlayer
+from repos.players_repo import PlayersRepo
 from routes.dependencies import get_nhl_service
 from services.nhl_service import NhlService
 
@@ -48,3 +52,43 @@ async def get_player(
         raise HTTPException(
             status_code=503, detail=f"Upstream API unavailable: {exc}"
         ) from exc
+
+
+@router.post(
+    "/{player_id}/refresh",
+    response_model=NhlPlayer,
+    summary="Refresh a player's snapshot from the NHL API",
+    responses=_ERROR_RESPONSES,
+)
+async def refresh_player(
+    player_id: int = Path(
+        description="NHL player id, e.g. 8478402.",
+        examples=[8478402],
+        gt=0,
+    ),
+    service: NhlService = Depends(get_nhl_service),  # noqa: B008
+    session: AsyncSession = Depends(get_async_session),  # noqa: B008
+) -> NhlPlayer:
+    """Fetch a player's landing payload and upsert the players snapshot.
+
+    Same upstream source as ``GET /nhl/players/{player_id}``, but the
+    flattened result is persisted (backfill for rows the poll worker
+    hasn't seen yet).
+    """
+    try:
+        landing = await service.get_player(player_id)
+        summary = NhlPlayer.model_validate(landing)
+        await PlayersRepo(session).upsert_from_summary(summary)
+        await session.commit()
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except httpx2.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Upstream API error: {exc.response.status_code}",
+        ) from exc
+    except httpx2.HTTPError as exc:
+        raise HTTPException(
+            status_code=503, detail=f"Upstream API unavailable: {exc}"
+        ) from exc
+    return summary

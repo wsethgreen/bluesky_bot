@@ -8,7 +8,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from db.models.base import Base
 
 if TYPE_CHECKING:
-    from db.models.games import Game
+    from db.models.game import Game
 
 
 class Goal(Base):

@@ -10,6 +10,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import RedirectResponse
 
 from config.settings import get_settings
+from db.engine import engine
 from routes.nhl.goals import router as nhl_goals_router
 from routes.nhl.players import router as nhl_players_router
 from routes.nhl.schedule import router as nhl_schedule_router
@@ -31,6 +32,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if service is not None:
             await service.client.http.aclose()
             await service.stats.http.aclose()
+        await engine.dispose()
 
 
 app = FastAPI(
