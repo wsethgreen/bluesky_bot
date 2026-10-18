@@ -70,7 +70,9 @@ class Settings(BaseSettings):
     game_day_check_hour: int = Field(default=9, ge=0, le=23)
     game_day_check_minute: int = Field(default=0, ge=0, le=59)
     poll_interval_minutes: int = Field(default=5, ge=1)
-    post_interval_minutes: int = Field(default=2, ge=1)
+    post_interval_minutes: int = Field(
+        default=1, ge=1, description="Poster interval in minutes (1 = every minute)"
+    )
 
 
 @lru_cache

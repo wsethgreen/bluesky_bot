@@ -30,3 +30,27 @@ class PlayersRepo:
         if summary.player_id is None:
             raise ValueError("NhlPlayer has no player_id")
         return await self.upsert_player(Player(**summary.model_dump()))
+
+    async def bump_scorer(self, player_id: int) -> bool:
+        """Local +1 goal / +1 point for a freshly-detected goal.
+
+        The stats API lags the play-by-play by minutes-to-hours, so season
+        counts are nudged at detection time; the next scheduled API refresh
+        of the row replaces the snapshot with official totals. Returns False
+        when no player row exists to bump.
+        """
+        player = await self.get_player(player_id)
+        if player is None:
+            return False
+        player.goals += 1
+        player.points += 1
+        return True
+
+    async def bump_assist(self, player_id: int) -> bool:
+        """Local +1 assist / +1 point. Returns False when no row exists."""
+        player = await self.get_player(player_id)
+        if player is None:
+            return False
+        player.assists += 1
+        player.points += 1
+        return True

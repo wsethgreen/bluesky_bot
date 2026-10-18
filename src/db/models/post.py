@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, String, false, func
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, false, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db.models.base import Base
@@ -30,6 +30,13 @@ class Post(Base):
     posted: Mapped[bool] = mapped_column(
         nullable=False, default=False, server_default=false(), index=True
     )
+    defunct: Mapped[bool] = mapped_column(
+        nullable=False, default=False, server_default=false(), index=True
+    )
+    attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    last_error: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

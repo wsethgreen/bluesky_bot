@@ -10,6 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models.post import Post
 
+# Give up on a clip after this many failed post attempts.
+MAX_ATTEMPTS = 5
+
 
 class PostsRepo:
     """Pending/posted highlight clips. The PK dedupes re-polls.
@@ -54,20 +57,25 @@ class PostsRepo:
         result = await self.session.execute(
             select(Post)
             .where(Post.posted.is_(False))
+            .where(Post.defunct.is_(False))
             .order_by(Post.created_at)
             .limit(limit)
         )
         return list(result.scalars().all())
 
     async def claim_pending_batch(self, limit: int = 10) -> list[Post]:
-        """Lock the oldest unposted rows for this consumer.
+        """Lock the oldest unposted, non-defunct rows for this consumer.
 
-        ``FOR UPDATE SKIP LOCKED`` so competing poster consumers never
-        grab the same clip. Callers must commit (or roll back) to release.
+        Skips rows already marked ``defunct`` or that have exhausted
+        ``MAX_ATTEMPTS`` retries. ``FOR UPDATE SKIP LOCKED`` so competing
+        poster consumers never grab the same clip. Callers must commit (or
+        roll back) to release.
         """
         result = await self.session.execute(
             select(Post)
             .where(Post.posted.is_(False))
+            .where(Post.defunct.is_(False))
+            .where(Post.attempts < MAX_ATTEMPTS)
             .order_by(Post.created_at)
             .limit(limit)
             .with_for_update(skip_locked=True)
@@ -81,4 +89,16 @@ class PostsRepo:
             return False
         post.posted = True
         post.posted_at = datetime.now(UTC)
+        return True
+
+    async def mark_defunct(self, clip_id: int, error: str) -> bool:
+        """Mark a clip as defunct (give up) with the last error recorded.
+
+        Returns False when the row doesn't exist.
+        """
+        post = await self.session.get(Post, clip_id)
+        if post is None:
+            return False
+        post.defunct = True
+        post.last_error = error
         return True
