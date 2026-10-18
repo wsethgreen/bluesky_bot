@@ -6,9 +6,10 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
-from clients.bluesky_client import BlueskyClient
+from clients.bluesky_client import BlueskyClient, BlueskyPostRef
 from clients.http_client import HttpClient
 from db.models.game import Game
+from db.models.post import PostKind
 from repos.posts_repo import MAX_ATTEMPTS, PostsRepo
 from workers.poll_worker import PollWorker
 
@@ -73,16 +74,21 @@ async def poll_nhl_live(ctx: WorkerContext) -> str:
     return await worker.poll_once()
 
 
-async def post_pending_clips(ctx: WorkerContext, *, force: bool = False) -> str:
-    """Post the oldest unposted highlight clip to Bluesky (one per run).
+async def post_pending(ctx: WorkerContext, *, force: bool = False) -> str:
+    """Post the oldest pending Bluesky post (text or video), one per run.
 
-    Runs every minute on game days. Claims the oldest ``posted=False`` row
-    with ``FOR UPDATE SKIP LOCKED``, downloads the Brightcove MP4, posts it
-    to Bluesky using the stored text, then marks the row as posted. Any
-    failure leaves the row unposted so it is retried on the next run.
+    Runs every minute on game days. Claims the oldest ``posted=False``
+    row with ``FOR UPDATE SKIP LOCKED``. Text rows (the goal
+    announcement) go out immediately. Video rows resolve the Brightcove
+    MP4, download it, and post it with the short caption — quoting the
+    goal's text post when that post is already up, standalone otherwise.
+    Rows are claimed oldest-first and a goal's text row always precedes
+    its video row, so the quote is normally available by the time the
+    video posts. Any failure leaves the row unposted so it is retried on
+    the next run.
 
     ``force`` (manual runner only) skips the 4-hour posting-window check
-    so late clips from a finished game can still be posted.
+    so late posts from a finished game can still go out.
     """
     if ctx.is_game_day is False:
         return "skipped: not a game day"
@@ -95,12 +101,13 @@ async def post_pending_clips(ctx: WorkerContext, *, force: bool = False) -> str:
             return "no pending posts"
 
         post = pending[0]
+        label = f"{post.kind} post {post.id}"
         try:
             # Only post within [game_start, game_start + 4 hours].
             game = await session.get(Game, post.game_id)
             if game is None:
                 await session.rollback()
-                return f"clip {post.post_id}: no game row found"
+                return f"{label}: no game row found"
 
             now = datetime.now(UTC)
             start = game.start_time
@@ -110,42 +117,52 @@ async def post_pending_clips(ctx: WorkerContext, *, force: bool = False) -> str:
             if not force:
                 if now < start:
                     await session.rollback()
-                    return f"clip {post.post_id}: before game start ({start})"
+                    return f"{label}: before game start ({start})"
                 if now > window_end:
                     await session.rollback()
-                    return f"clip {post.post_id}: outside 4-hour posting window (ended {window_end})"
+                    return (
+                        f"{label}: outside 4-hour posting window (ended {window_end})"
+                    )
 
-            # Resolve Brightcove video metadata to find the direct MP4 source.
-            video = await ctx.nhl.brightcove.get_video(post.post_id)
-            mp4 = next(
-                (s for s in (video.sources or []) if s.container == "MP4"),
-                None,
-            )
-            if mp4 is None or not mp4.src:
-                return f"clip {post.post_id}: no MP4 rendition available"
-
-            # Download the video bytes.
-            async with HttpClient() as http:
-                resp = await http.get(mp4.src, headers={"Accept": "*/*"})
-                video_bytes = resp.content
-
-            # Post to Bluesky using text already stored on the row.
             bsky = BlueskyClient()
             tag = (post.team or "NHL").strip().upper()
-            await bsky.post_video(
-                text=post.text,
-                tag=tag,
-                video=video_bytes,
-                alt=f"NHL {tag} highlight",
-            )
 
-            await posts.mark_posted(post.post_id)
+            if post.kind == PostKind.VIDEO:
+                if post.clip_id is None:
+                    raise ValueError("video row has no clip_id")
+                quote = await _quoted_text_ref(posts, post)
+
+                # Resolve Brightcove video metadata to find the direct MP4.
+                video = await ctx.nhl.brightcove.get_video(post.clip_id)
+                mp4 = next(
+                    (s for s in (video.sources or []) if s.container == "MP4"),
+                    None,
+                )
+                if mp4 is None or not mp4.src:
+                    return f"{label}: no MP4 rendition available"
+
+                # Download the video bytes.
+                async with HttpClient() as http:
+                    resp = await http.get(mp4.src, headers={"Accept": "*/*"})
+                    video_bytes = resp.content
+
+                ref = await bsky.post_video(
+                    text=post.text,
+                    tag=tag,
+                    video=video_bytes,
+                    alt=f"NHL {tag} highlight",
+                    quote=quote,
+                )
+            else:
+                ref = await bsky.post_text(text=post.text, tag=tag)
+
+            await posts.mark_posted(post.id, uri=ref.uri, cid=ref.cid)
             await session.commit()
-            return f"posted clip {post.post_id} ({len(video_bytes)} bytes)"
+            return f"posted {label} ({ref.uri})"
 
         except Exception as exc:
             await session.rollback()
-            logger.exception("failed to post clip %s", post.post_id)
+            logger.exception("failed to post %s", label)
 
             # Record the failed attempt; give up after MAX_ATTEMPTS.
             post.attempts = (post.attempts or 0) + 1
@@ -153,4 +170,16 @@ async def post_pending_clips(ctx: WorkerContext, *, force: bool = False) -> str:
             if post.attempts >= MAX_ATTEMPTS:
                 post.defunct = True
             await session.commit()
-            return f"clip {post.post_id}: post failed (attempt {post.attempts})"
+            return f"{label}: post failed (attempt {post.attempts})"
+
+
+async def _quoted_text_ref(posts: PostsRepo, post) -> BlueskyPostRef | None:
+    """Strong ref of the goal's text post, when it is already published.
+
+    Video rows normally follow their text row (older claim order), so the
+    ref is usually available. ``None`` means "post the video standalone":
+    the text post may still be retrying, went defunct, or the row is a
+    legacy pre-migration video post with no text sibling.
+    """
+    ref = await posts.get_posted_text_ref(post.game_id, post.event_id)
+    return None if ref is None else BlueskyPostRef(uri=ref[0], cid=ref[1])

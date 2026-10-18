@@ -15,6 +15,8 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from db.models.game import Game
+from db.models.goal import Goal
+from db.models.post import PostKind
 from models.nhl import NhlPlay, NhlScheduleGame, NhlScheduleTeam
 from models.player import NhlPlayer
 from repos.games_repo import GamesRepo
@@ -102,11 +104,11 @@ def build_highlight_post_text(
     time_remaining: str | None,
     period_number: int | None,
 ) -> str:
-    """Build the Bluesky post text for a goal highlight.
+    """Build the Bluesky post text for a goal.
 
     Format:
 
-        {TEAM} goal!
+        #{TEAM} goal!
         🏒⚫ {Scorer Name} ({season goals})
         Assists: {Assist1 Name} ({season assists}), {Assist2 Name} ({season assists})
         ┌─────────────────┐
@@ -115,14 +117,17 @@ def build_highlight_post_text(
         │ CBJ: 4 │ NYR: 2 │
         └─────────────────┘
 
-    The assists line is omitted when there are no assisting players.
+    The leading ``#{TEAM}`` is a real hashtag: the poster detects the
+    prefix and attaches the tag facet to it, so the post opens with a
+    tappable ``#CBJ goal!``. The assists line is omitted when there are
+    no assisting players.
     """
     lines: list[str] = []
 
     scorer_name = (
         f"{scorer.first_name} {scorer.last_name}" if scorer is not None else "Unknown"
     )
-    lines.append(f"{team_abbrev} goal!")
+    lines.append(f"#{team_abbrev} goal!")
     lines.append(f"🏒⚫ {scorer_name} ({scorer_season_goals})")
 
     assist_players = [a for a in assists if a is not None][:2]
@@ -146,13 +151,24 @@ def build_highlight_post_text(
     return "\n".join(lines)
 
 
+def build_highlight_video_caption() -> str:
+    """Caption for the standalone highlight video post.
+
+    Deliberately minimal: the goal details live on the (quoted) text
+    post, so the video post only carries the camera emoji — the team
+    hashtag is appended by the poster.
+    """
+    return "🎥 "
+
+
 class PollWorker:
     """One poll cycle for the followed team.
 
     1. Look up today's game in the DB; only hit the schedule API on a miss.
     2. Fetch one play-by-play payload: game state + the team's goals.
-    3. Upsert goals, scorer/assister snapshots, and unseen highlight clips
-       as unposted ``Post`` rows for the poster.
+    3. Upsert goals, scorer/assister snapshots, and unposted ``Post`` rows
+       for the poster: a text post per goal (claimed immediately at
+       detection) and a video post once the highlight clip id appears.
     """
 
     def __init__(
@@ -225,7 +241,7 @@ class PollWorker:
             return f"game {game.id} stored (team side not resolved)"
 
         state, goals = await self._nhl.get_live_goals(game.id, team_id)
-        new_clips, players_refreshed = await self._store_goals(
+        new_text_posts, new_video_posts, players_refreshed = await self._store_goals(
             goals_repo,
             posts,
             players,
@@ -241,7 +257,8 @@ class PollWorker:
         home = game.home_team.abbrev if game.home_team else "?"
         summary = (
             f"{away} @ {home} ({state or game.game_state}): "
-            f"{len(goals)} goals, {new_clips} new clips, "
+            f"{len(goals)} goals, {new_text_posts} new text posts, "
+            f"{new_video_posts} new video posts, "
             f"{players_refreshed} players refreshed"
         )
         logger.info("poll: %s", summary)
@@ -276,7 +293,7 @@ class PollWorker:
 
         team_id = away.id if away.tri_code.upper() == self._team else home.id
         state, goals = await self._nhl.get_live_goals(row.game_id, team_id)
-        new_clips, players_refreshed = await self._store_goals(
+        new_text_posts, new_video_posts, players_refreshed = await self._store_goals(
             goals_repo,
             posts,
             players,
@@ -290,7 +307,8 @@ class PollWorker:
 
         summary = (
             f"{away.tri_code} @ {home.tri_code} ({state or row.game_state}): "
-            f"{len(goals)} goals, {new_clips} new clips, "
+            f"{len(goals)} goals, {new_text_posts} new text posts, "
+            f"{new_video_posts} new video posts, "
             f"{players_refreshed} players refreshed"
         )
         logger.info("poll: %s", summary)
@@ -315,11 +333,19 @@ class PollWorker:
         plays: list[NhlPlay],
         home_tri: str | None = None,
         away_tri: str | None = None,
-    ) -> tuple[int, int]:
-        """Upsert goals, players, and unseen clips.
+    ) -> tuple[int, int, int]:
+        """Upsert goals, players, and the pending Bluesky posts.
 
-        Builds the post text at detection time (when goal/assist numbers are
-        accurate) and stores it on the ``Post`` row so the poster stays simple.
+        A text post row is claimed for every goal on every poll — the
+        (game, event, kind) unique key dedupes re-polls — so the goal
+        text goes out as soon as the poster runs, whether or not the
+        highlight clip exists yet. A video row is claimed only once the
+        NHL attaches the clip id, which can be several minutes later.
+
+        Both texts are built at detection time (when goal/assist numbers
+        are accurate) and stored on the ``Post`` rows so the poster stays
+        simple. The text row is claimed before the video row so, within
+        one game, the goal text post always precedes its highlight video.
 
         Newly-inserted goals get a local stat bump (scorer +1 goal, each
         assister +1 assist) so the post text reflects the fresh count even
@@ -328,11 +354,12 @@ class PollWorker:
         skip it — and the next scheduled API refresh overwrites the row
         with official totals.
 
-        Returns ``(new clips, players refreshed from API)``.
+        Returns ``(new text posts, new video posts, players refreshed
+        from API)``.
         """
-        clips: dict[int, tuple[int, str | None]] = {}
-        goal_by_event: dict[int, object] = {}
-        new_goals: list[object] = []
+        goals: list[Goal] = []
+        clips: dict[int, int] = {}  # highlight clip id -> event id
+        new_goals: list[Goal] = []
         for play in plays:
             is_new = (
                 play.event_id is not None
@@ -341,37 +368,51 @@ class PollWorker:
             goal = await goals_repo.upsert_from_play(game_id, play)
             if goal is None:
                 continue
+            goals.append(goal)
             if is_new:
                 new_goals.append(goal)
             if goal.highlight_clip_id is not None:
-                highlight_url = self._brightcove_video_url(goal.highlight_clip_id)
-                clips[goal.highlight_clip_id] = (goal.event_id, highlight_url)
-                goal_by_event[goal.event_id] = goal
+                clips[goal.highlight_clip_id] = goal.event_id
         players_refreshed = await self._ensure_players(players, plays)
         await self._bump_player_stats(players, new_goals)
-        new_clips = 0
-        for clip_id, (event_id, highlight_url) in clips.items():
-            goal = goal_by_event.get(event_id)
-            text = await self._build_clip_text(
+
+        new_text_posts = 0
+        for goal in goals:
+            text = await self._build_goal_text(
                 players, goal, home_tri=home_tri, away_tri=away_tri
             )
             if await posts.claim_pending(
-                clip_id,
-                game_id,
-                self._team,
-                event_id,
-                highlight_url=highlight_url,
+                kind=PostKind.TEXT,
+                game_id=game_id,
+                team=self._team,
+                event_id=goal.event_id,
                 text=text or "",
             ):
-                new_clips += 1
+                new_text_posts += 1
+                logger.info("poll: new goal text post for event %s", goal.event_id)
+
+        new_video_posts = 0
+        caption = build_highlight_video_caption()
+        for clip_id, event_id in clips.items():
+            highlight_url = self._brightcove_video_url(clip_id)
+            if await posts.claim_pending(
+                kind=PostKind.VIDEO,
+                game_id=game_id,
+                team=self._team,
+                event_id=event_id,
+                text=caption,
+                clip_id=clip_id,
+                highlight_url=highlight_url,
+            ):
+                new_video_posts += 1
                 logger.info(
-                    "poll: new highlight clip %s for event %s (post row created)",
+                    "poll: new highlight clip %s for event %s (video post row created)",
                     clip_id,
                     event_id,
                 )
-        return new_clips, players_refreshed
+        return new_text_posts, new_video_posts, players_refreshed
 
-    async def _build_clip_text(
+    async def _build_goal_text(
         self,
         players: PlayersRepo,
         goal,
@@ -513,7 +554,13 @@ class PollWorker:
         """
         try:
             bc = self._nhl.brightcove
-        except ValueError, AttributeError:
+        except ValueError:
+            logger.warning(
+                "Brightcove not configured; cannot build video URL for clip %s",
+                clip_id,
+            )
+            return None
+        except AttributeError:
             logger.warning(
                 "Brightcove not configured; cannot build video URL for clip %s",
                 clip_id,

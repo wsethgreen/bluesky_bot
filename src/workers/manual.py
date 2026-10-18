@@ -13,7 +13,7 @@ Run inside the compose network (scheduler container has DB access):
     docker compose exec scheduler python -m workers.manual post --dry-run
 
 ``--dry-run`` for ``post`` claims nothing and posts nothing; it only
-prints what the oldest pending clip is.
+prints the oldest pending posts (goal text + highlight video rows).
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ from db.engine import engine
 from db.session import AsyncSessionLocal
 from repos.posts_repo import PostsRepo
 from services.nhl_service import NhlService
-from workers.jobs import post_pending_clips
+from workers.jobs import post_pending
 from workers.poll_worker import PollWorker
 from workers.scheduler import WorkerContext
 
@@ -66,12 +66,12 @@ async def _post(force: bool, dry_run: bool) -> None:
                     return
                 for p in pending:
                     print(
-                        f"pending: post_id={p.post_id} game={p.game_id} "
-                        f"team={p.team} attempts={p.attempts} "
+                        f"pending: id={p.id} kind={p.kind} clip_id={p.clip_id} "
+                        f"game={p.game_id} team={p.team} attempts={p.attempts} "
                         f"defunct={p.defunct} text={p.text!r}"
                     )
             return
-        summary = await post_pending_clips(ctx, force=force)
+        summary = await post_pending(ctx, force=force)
         print(f"post: {summary}")
     finally:
         await nhl.client.http.aclose()
@@ -88,8 +88,8 @@ async def _status() -> None:
             return
         for p in pending:
             print(
-                f"pending: post_id={p.post_id} game={p.game_id} "
-                f"team={p.team} attempts={p.attempts} "
+                f"pending: id={p.id} kind={p.kind} clip_id={p.clip_id} "
+                f"game={p.game_id} team={p.team} attempts={p.attempts} "
                 f"defunct={p.defunct} text={p.text!r}"
             )
     await engine.dispose()
@@ -103,8 +103,8 @@ def main() -> None:
     parser.add_argument(
         "action",
         choices=["poll", "post", "status"],
-        help="poll: run one poll cycle; post: post oldest pending clip; "
-        "status: list pending clips without posting",
+        help="poll: run one poll cycle; post: post oldest pending post; "
+        "status: list pending posts without posting",
     )
     parser.add_argument(
         "--force",
@@ -114,7 +114,7 @@ def main() -> None:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="(post only) print the oldest pending clip without posting",
+        help="(post only) print the oldest pending posts without posting",
     )
     args = parser.parse_args()
 
