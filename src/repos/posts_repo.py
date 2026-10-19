@@ -8,7 +8,8 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models.post import Post, PostKind
+from db.models.post import Post
+from models.enum import PostKind
 
 # Give up on a post after this many failed attempts.
 MAX_ATTEMPTS = 5

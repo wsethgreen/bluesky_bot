@@ -3,21 +3,13 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 
 from atproto import AsyncClient, client_utils, models
 
 from config.settings import get_settings
+from models.bluesky import BlueskyPostRef
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class BlueskyPostRef:
-    """Strong ref (uri + cid) to a published post — enough to quote it."""
-
-    uri: str
-    cid: str
 
 
 class BlueskyClient:

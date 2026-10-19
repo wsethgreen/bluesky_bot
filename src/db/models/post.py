@@ -22,18 +22,6 @@ if TYPE_CHECKING:
     from db.models.game import Game
 
 
-class PostKind:
-    """Kinds of Bluesky posts queued in the ``posts`` table.
-
-    Each goal produces up to two rows: a ``text`` row claimed the moment
-    the goal is detected, and a ``video`` row claimed once the NHL
-    attaches the highlight clip id.
-    """
-
-    TEXT = "text"
-    VIDEO = "video"
-
-
 class Post(Base):
     """One pending/posted Bluesky post, deduped by (game, event, kind).
 

@@ -6,10 +6,11 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
-from clients.bluesky_client import BlueskyClient, BlueskyPostRef
+from clients.bluesky_client import BlueskyClient
 from clients.http_client import HttpClient
 from db.models.game import Game
-from db.models.post import PostKind
+from models.bluesky import BlueskyPostRef
+from models.enum import PostKind
 from repos.posts_repo import MAX_ATTEMPTS, PostsRepo
 from workers.poll_worker import PollWorker
 

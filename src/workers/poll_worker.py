@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from db.models.game import Game
 from db.models.goal import Goal
-from db.models.post import PostKind
+from models.enum import PostKind
 from models.nhl import NhlPlay, NhlScheduleGame, NhlScheduleTeam
 from models.player import NhlPlayer
 from repos.games_repo import GamesRepo
@@ -35,6 +35,15 @@ TERMINAL_STATES = frozenset({"FINAL", "OFF"})
 # Player snapshots refresh only when missing or older than this. Keeps the
 # per-poll cost at local DB reads after the first sighting.
 PLAYER_REFRESH_DAYS = 7
+
+# Inner width of the scoreboard box, in characters. Constant so every
+# game's box is the same size: tri codes are always 3 chars, the clock
+# is fixed at 5 (MM:SS), and scores are formatted into a 2-wide field
+# (fine up to 99 — no NHL game has ever had a 100-goal team). The
+# max() in _scoreboard_box is a safety valve that widens the box for
+# pathological data rather than breaking alignment; it never triggers
+# in practice.
+SCOREBOARD_INNER_WIDTH = 17
 
 
 def _period_label(period_number: int | None) -> str:
@@ -67,20 +76,34 @@ def _scoreboard_box(
 ) -> list[str]:
     """Two-row scoreboard (clock over score) in a unicode box.
 
-    Sized to the widest row so the edges line up in monospace renderings
-    and stay tidy in Bluesky's proportional font.
+    Always ``SCOREBOARD_INNER_WIDTH`` inner characters wide (21 total
+    with the borders), so consecutive goal posts render identically
+    regardless of period label length or score digits. Tri codes are
+    padded to 3 and scores right-aligned in a 2-wide field:
+
+        ┌─────────────────┐
+        │ 3rd  ·  04:32   │
+        ├─────────────────┤
+        │ CBJ:  4 │ NYR:  2 │
+        └─────────────────┘
     """
     clock = time_remaining or "--:--"
     period_label = _period_label(period_number)
     if period_label:
-        row_clock = f"{period_label} · {clock}"
+        # Two spaces around the dot so the clock row's visible content
+        # fills more of the box and doesn't look sparse next to the
+        # score row.
+        row_clock = f"{period_label}  ·  {clock}"
     else:
         row_clock = clock
+    home_goals = home_score or 0
+    away_goals = away_score or 0
     row_score = (
-        f"{home_tri or '?'}: {home_score or 0} │ {away_tri or '?'}: {away_score or 0}"
+        f"{(home_tri or '?'):<3}: {home_goals:>2} │ "
+        f"{(away_tri or '?'):<3}: {away_goals:>2}"
     )
 
-    width = max(len(row_clock), len(row_score))
+    width = max(SCOREBOARD_INNER_WIDTH, len(row_clock), len(row_score))
     bar = "─" * (width + 2)
     return [
         f"┌{bar}┐",
