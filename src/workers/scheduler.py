@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from config.settings import Settings
 from services.nhl_service import NhlService
-from workers.jobs import check_game_day, poll_nhl_live, post_pending_clips_stub
+from workers.jobs import check_game_day, poll_nhl_live, post_pending
 
 logger = logging.getLogger(__name__)
 
@@ -101,9 +101,9 @@ def build_scheduler(ctx: WorkerContext) -> AsyncIOScheduler:
         run_job,
         "interval",
         minutes=ctx.settings.post_interval_minutes,
-        args=(POST_JOB_ID, post_pending_clips_stub, ctx),
+        args=(POST_JOB_ID, post_pending, ctx),
         id=POST_JOB_ID,
-        name="Poster (stub, game days only)",
+        name="Poster (oldest pending text/video post, game days only)",
         coalesce=True,
         max_instances=1,
         misfire_grace_time=240,
