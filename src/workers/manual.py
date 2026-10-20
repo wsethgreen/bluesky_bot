@@ -12,6 +12,10 @@ Run inside the compose network (scheduler container has DB access):
     docker compose exec scheduler python -m workers.manual post --force
     docker compose exec scheduler python -m workers.manual post --dry-run
 
+``status`` prints the latest recorded run per job (from ``job_runs``)
+followed by the pending posts — the quickest way to answer "are the
+workers alive and what did they last do?".
+
 ``--dry-run`` for ``post`` claims nothing and posts nothing; it only
 prints the oldest pending posts (goal text + highlight video rows).
 """
@@ -22,15 +26,17 @@ import argparse
 import asyncio
 import logging
 import os
+from datetime import UTC, datetime
 
 from config.settings import get_settings
 from db.engine import engine
 from db.session import AsyncSessionLocal
+from jobs.base import WorkerContext
+from jobs.poll_nhl_live import PollWorker
+from jobs.post_pending import post_pending
+from repos.job_runs_repo import JobRunsRepo
 from repos.posts_repo import PostsRepo
 from services.nhl_service import NhlService
-from workers.jobs import post_pending
-from workers.poll_worker import PollWorker
-from workers.scheduler import WorkerContext
 
 logger = logging.getLogger(__name__)
 
@@ -81,17 +87,30 @@ async def _post(force: bool, dry_run: bool) -> None:
 
 async def _status() -> None:
     async with AsyncSessionLocal() as session:
+        runs = JobRunsRepo(session)
+        latest = await runs.latest_per_job()
+        if not latest:
+            print("no job runs recorded yet (scheduler never ran a job)")
+        else:
+            now = datetime.now(UTC)
+            for r in latest:
+                age = now - r.started_at
+                state = "OK  " if r.ok else "FAIL"
+                print(
+                    f"job {r.job_id}: {state} {age.total_seconds():.0f}s ago "
+                    f"({r.started_at.isoformat()}) — {r.summary or r.error or ''}"
+                )
         posts = PostsRepo(session)
         pending = await posts.list_pending(limit=10)
         if not pending:
             print("no pending posts")
-            return
-        for p in pending:
-            print(
-                f"pending: id={p.id} kind={p.kind} clip_id={p.clip_id} "
-                f"game={p.game_id} team={p.team} attempts={p.attempts} "
-                f"defunct={p.defunct} text={p.text!r}"
-            )
+        else:
+            for p in pending:
+                print(
+                    f"pending: id={p.id} kind={p.kind} clip_id={p.clip_id} "
+                    f"game={p.game_id} team={p.team} attempts={p.attempts} "
+                    f"defunct={p.defunct} text={p.text!r}"
+                )
     await engine.dispose()
 
 
@@ -104,7 +123,7 @@ def main() -> None:
         "action",
         choices=["poll", "post", "status"],
         help="poll: run one poll cycle; post: post oldest pending post; "
-        "status: list pending posts without posting",
+        "status: latest job run per job + pending posts",
     )
     parser.add_argument(
         "--force",

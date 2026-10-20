@@ -1,8 +1,14 @@
-"""Game-day poll worker: DB-first live polling with minimal NHL API calls.
+"""NHL live-poll job: DB-first polling with minimal NHL API calls.
+
+Job entry point is ``poll_nhl_live``; ``PollWorker`` holds the actual
+per-cycle logic (discovery, refresh, goal/post upserts).
 
 Cost per cycle:
 - Game already in DB, not final: 1 call (play-by-play).
 - Game final in DB: 0 calls.
+- Off-day (cached "no game" check): 0 calls. The negative answer is
+  stored per (team, day) in ``game_day_checks``; only the first poll of
+  a new day re-checks the schedule API to refresh it.
 - First poll of game day (DB miss): schedule + play-by-play + team
   lookups only for teams missing from the DB.
 """
@@ -11,6 +17,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -19,6 +26,7 @@ from db.models.goal import Goal
 from models.enum import PostKind
 from models.nhl import NhlPlay, NhlScheduleGame, NhlScheduleTeam
 from models.player import NhlPlayer
+from repos.game_day_checks_repo import GameDayChecksRepo
 from repos.games_repo import GamesRepo
 from repos.goals_repo import GoalsRepo
 from repos.players_repo import PlayersRepo
@@ -26,7 +34,28 @@ from repos.posts_repo import PostsRepo
 from repos.teams_repo import TeamsRepo
 from services.nhl_service import NhlService
 
+if TYPE_CHECKING:
+    from jobs.base import WorkerContext
+
 logger = logging.getLogger(__name__)
+
+JOB_ID = "nhl_live_poller"
+
+
+async def poll_nhl_live(ctx: WorkerContext) -> str:
+    """Every N min: poll the followed team's game/goals/clips.
+
+    Self-gating via the DB: on off-days this costs one indexed read of
+    the cached schedule check (plus, once per day, one schedule call to
+    refresh that cache) — no scheduler pause/resume required.
+    """
+    worker = PollWorker(
+        nhl=ctx.nhl,
+        sessions=ctx.sessions,
+        team_abbreviation=ctx.settings.nhl_team_abbreviation,
+    )
+    return await worker.poll_once()
+
 
 # Play-by-play states after which nothing more can happen. Polls for these
 # games cost zero API calls.
@@ -221,14 +250,30 @@ class PollWorker:
             goals_repo = GoalsRepo(session)
             posts = PostsRepo(session)
             players = PlayersRepo(session)
+            checks = GameDayChecksRepo(session)
 
             game_row = await games.get_game_by_date(self._nhl.today, self._team)
             if game_row is None:
+                # Gate: a stored "no game today" for this (team, day)
+                # skips discovery entirely (0 API calls). `force` (manual
+                # runner) ignores the cached answer and re-checks the API.
+                if not force:
+                    cached = await checks.get_check(self._team, self._nhl.today)
+                    if cached is not None and not cached.has_game:
+                        return f"no {self._team} game today (cached)"
                 return await self._discover(
-                    teams, games, goals_repo, posts, players, session
+                    teams, games, goals_repo, posts, players, checks, session
                 )
             return await self._refresh(
-                teams, games, goals_repo, posts, players, session, game_row, force=force
+                teams,
+                games,
+                goals_repo,
+                posts,
+                players,
+                checks,
+                session,
+                game_row,
+                force=force,
             )
 
     async def _discover(
@@ -238,11 +283,19 @@ class PollWorker:
         goals_repo: GoalsRepo,
         posts: PostsRepo,
         players: PlayersRepo,
+        checks: GameDayChecksRepo,
         session: AsyncSession,
     ) -> str:
-        """First poll of game day: schedule lookup, then full cycle."""
+        """First poll of game day: schedule lookup, then full cycle.
+
+        Records the schedule answer in ``game_day_checks`` so later
+        off-day cycles skip the API. Failures before that record is
+        written leave no cached answer, so the next cycle retries.
+        """
         game = await self._nhl.get_team_game_on_date(team_abbreviation=self._team)
         if game is None:
+            await checks.record_check(self._team, self._nhl.today, has_game=False)
+            await session.commit()
             return f"no {self._team} game today"
         if game.id is None:
             return f"game found but has no id ({game.game_state})"
@@ -294,6 +347,7 @@ class PollWorker:
         goals_repo: GoalsRepo,
         posts: PostsRepo,
         players: PlayersRepo,
+        checks: GameDayChecksRepo,
         session: AsyncSession,
         row: Game,
         *,
@@ -305,7 +359,7 @@ class PollWorker:
         if away is None or home is None:
             # Partial write from an earlier failure — rediscover to heal.
             return await self._discover(
-                teams, games, goals_repo, posts, players, session
+                teams, games, goals_repo, posts, players, checks, session
             )
 
         if row.game_state in TERMINAL_STATES and not force:
