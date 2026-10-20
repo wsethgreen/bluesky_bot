@@ -1,8 +1,8 @@
 """Container entrypoint for the singleton scheduler service.
 
-Owns all APScheduler timers (game-day check + poll + poster stub).
-Run with ``python -m workers.run --scheduler``. ``--worker`` is kept as a
-deprecated alias so the old compose service name doesn't crash-loop.
+Owns all APScheduler timers. Run with ``python -m workers.run
+--scheduler``. ``--worker`` is kept as a deprecated alias so the old
+compose service name doesn't crash-loop.
 """
 
 from __future__ import annotations
@@ -16,9 +16,9 @@ import signal
 from config.settings import get_settings
 from db.engine import engine
 from db.session import AsyncSessionLocal
+from jobs.base import WorkerContext
 from services.nhl_service import NhlService
-from workers.jobs import check_game_day
-from workers.scheduler import CHECK_JOB_ID, WorkerContext, build_scheduler, run_job
+from workers.scheduler import build_scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -30,15 +30,11 @@ async def _run_scheduler() -> None:
     scheduler = build_scheduler(ctx)
     scheduler.start()
     logger.info(
-        "scheduler started (check %02d:%02d %s, poll every %dm)",
-        settings.game_day_check_hour,
-        settings.game_day_check_minute,
-        settings.app_timezone,
+        "scheduler started (poll every %dm, post every %dm, %s)",
         settings.poll_interval_minutes,
+        settings.post_interval_minutes,
+        settings.app_timezone,
     )
-    # Decide initial paused/resumed state now so restarts don't wait for
-    # the next cron tick (or poll all day when there's no game).
-    await run_job(CHECK_JOB_ID, check_game_day, ctx)
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
