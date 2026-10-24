@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 
 from clients.brightcove_client import BrightcoveClient
@@ -11,17 +12,41 @@ from clients.nhl_client import NhlClient
 from clients.nhl_stats_client import NhlStatsClient
 from config.settings import get_settings
 from models.brightcove import BrightcoveVideo
-from models.nhl import NhlPlay, NhlScheduleGame, NhlScheduleResponse
+from models.nhl import NhlPlay, NhlPlayByPlayTeam, NhlScheduleGame, NhlScheduleResponse
 from models.nhl_stats import NhlStatsTeam
 from utils.date import normalize_date
 
-# Play-by-play event types that count toward the official shots-on-goal
-# total for the team owning the event. Current payloads spell shot
-# events kebab-case ("shot-on-goal"; "missed-shot"/"blocked-shot" are
-# separate types and don't count), older ones camelCase, and a goal
-# counts as a shot on goal for the scoring team — verified against the
-# NHL's own "sog" field: 2 shots + 1 goal reads as 3.
-SOG_EVENT_TYPES = frozenset({"shot-on-goal", "shotOnGoal", "goal"})
+
+@dataclass(frozen=True)
+class NhlTeamTotals:
+    """One side's identity and official counts from the pbp header.
+
+    ``None`` fields mean the payload didn't carry that side (never for
+    a real game — the gamecenter UI reads the same fields).
+    """
+
+    team_id: int | None = None
+    abbrev: str | None = None
+    score: int | None = None
+    sog: int | None = None
+
+
+@dataclass(frozen=True)
+class NhlLiveSnapshot:
+    """Everything one play-by-play fetch tells the poller.
+
+    The scoreboard counts come from the payload's own ``awayTeam``/
+    ``homeTeam`` headers (the NHL's official score and shots-on-goal),
+    so no local shot-event tally is needed. ``period_ends`` are the
+    ``period-end`` plays in sequence — each carries the ``event_id``
+    the posts table dedupes on.
+    """
+
+    game_state: str | None
+    goals: list[NhlPlay]  # the followed team's goals, in sequence
+    period_ends: list[NhlPlay]  # one play per finished period
+    home: NhlTeamTotals
+    away: NhlTeamTotals
 
 
 class NhlService:
@@ -94,18 +119,16 @@ class NhlService:
         plays = await self.client.get_plays(game_id)
         return [p for p in plays if p.type_desc_key == "goal"]
 
-    async def get_live_goals(
-        self, game_id: int, team_id: int
-    ) -> tuple[str | None, list[NhlPlay], dict[int, int]]:
-        """One play-by-play fetch: game state, the team's goals, shots by team.
+    async def get_live_snapshot(self, game_id: int, team_id: int) -> NhlLiveSnapshot:
+        """One play-by-play fetch: state, our goals, period ends, scoreboard.
 
         The worker's steady-state path — a single request replaces the
         schedule lookup (game identity comes from the DB row) and the
-        separate state refresh. Shot totals are tallied from the same
-        payload by counting ``SOG_EVENT_TYPES`` events per owning
-        team: every shot the goalie faced plus goals (the official SOG
-        column counts goals as shots), with blocked/missed shots
-        excluded as their own event types.
+        separate state refresh. The score/SOG per side and the
+        ``period-end`` plays all come from that same payload: the header
+        counts are the NHL's official numbers (a goal counts as a shot
+        on goal there, exactly like the SOG column on the scoreboard),
+        so no local event tally is needed.
         """
         pbp = await self.client.get_play_by_play(game_id)
         goals = [
@@ -115,12 +138,26 @@ class NhlService:
             and p.details is not None
             and p.details.event_owner_team_id == team_id
         ]
-        shots: dict[int, int] = {}
-        for play in pbp.plays:
-            owner = play.details.event_owner_team_id if play.details else None
-            if owner is not None and play.type_desc_key in SOG_EVENT_TYPES:
-                shots[owner] = shots.get(owner, 0) + 1
-        return pbp.game_state, goals, shots
+        period_ends = [p for p in pbp.plays if p.type_desc_key == "period-end"]
+        return NhlLiveSnapshot(
+            game_state=pbp.game_state,
+            goals=goals,
+            period_ends=period_ends,
+            home=self._team_totals(pbp.home_team),
+            away=self._team_totals(pbp.away_team),
+        )
+
+    @staticmethod
+    def _team_totals(team: NhlPlayByPlayTeam | None) -> NhlTeamTotals:
+        """Header counts for one side; empty totals when the side is absent."""
+        if team is None:
+            return NhlTeamTotals()
+        return NhlTeamTotals(
+            team_id=team.id,
+            abbrev=team.abbrev,
+            score=team.score,
+            sog=team.sog,
+        )
 
     async def get_player(self, player_id: int) -> dict:
         """Player landing payload as a raw dict.

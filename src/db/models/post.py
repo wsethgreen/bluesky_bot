@@ -33,14 +33,16 @@ class Post(Base):
 
     __tablename__ = "posts"
     __table_args__ = (
-        CheckConstraint("kind in ('text', 'video')", name="posts_kind_check"),
+        CheckConstraint(
+            "kind in ('text', 'video', 'period_end')", name="posts_kind_check"
+        ),
         UniqueConstraint(
             "game_id", "event_id", "kind", name="posts_game_event_kind_key"
         ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    kind: Mapped[str] = mapped_column(String(10), nullable=False)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
     game_id: Mapped[int] = mapped_column(
         ForeignKey("games.game_id"), index=True, nullable=False
     )

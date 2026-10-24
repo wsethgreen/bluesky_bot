@@ -76,7 +76,33 @@ class NhlPlay(_Base):
     details: NhlPlayDetails | None = None
 
 
+class NhlPlayByPlayTeam(_Base):
+    """Header entry for one side of a play-by-play payload.
+
+    ``score``/``sog`` are the NHL's own live counts (a goal counts as a
+    shot on goal there too), so no local event tally is needed.
+    """
+
+    id: int | None = None
+    abbrev: str | None = None
+    score: int | None = None
+    sog: int | None = None
+
+
+class NhlGameClock(_Base):
+    time_remaining: str | None = Field(default=None, alias="timeRemaining")
+    seconds_remaining: int | None = Field(default=None, alias="secondsRemaining")
+    running: bool | None = None
+    in_intermission: bool | None = Field(default=None, alias="inIntermission")
+
+
 class NhlPlayByPlay(_Base):
     id: int | None = None
     game_state: str | None = Field(default=None, alias="gameState")
+    period_descriptor: NhlPlayPeriod | None = Field(
+        default=None, alias="periodDescriptor"
+    )
+    away_team: NhlPlayByPlayTeam | None = Field(default=None, alias="awayTeam")
+    home_team: NhlPlayByPlayTeam | None = Field(default=None, alias="homeTeam")
+    clock: NhlGameClock | None = None
     plays: list[NhlPlay] = Field(default_factory=list)

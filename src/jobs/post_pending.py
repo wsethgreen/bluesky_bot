@@ -1,8 +1,9 @@
 """Bluesky publishing job: post the oldest pending text/video post.
 
 Runs every minute on game days. Claims the oldest ``posted=False`` row
-with ``FOR UPDATE SKIP LOCKED``. Text rows (the goal announcement) go
-out immediately. Video rows resolve the Brightcove MP4, download it,
+with ``FOR UPDATE SKIP LOCKED``. Text rows (goal announcements and
+end-of-period scoreboards) go out immediately. Video rows resolve the
+Brightcove MP4, download it,
 and post it with the short caption — quoting the goal's text post when
 that post is already up, standalone otherwise. Rows are claimed
 oldest-first and a goal's text row always precedes its video row, so the
@@ -34,6 +35,9 @@ JOB_ID = "poster"
 
 async def post_pending(ctx: WorkerContext, *, force: bool = False) -> str:
     """Post the oldest pending Bluesky post (text or video), one per run.
+
+    Non-video rows — goal text and period-end scoreboards alike — share
+    the plain-text branch below; only video rows need clip resolution.
 
     ``force`` (manual runner only) skips the 4-hour posting-window check
     so late posts from a finished game can still go out.
