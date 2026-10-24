@@ -15,6 +15,14 @@ from models.nhl import NhlPlay, NhlScheduleGame, NhlScheduleResponse
 from models.nhl_stats import NhlStatsTeam
 from utils.date import normalize_date
 
+# Play-by-play event types that count toward the official shots-on-goal
+# total for the team owning the event. Current payloads spell shot
+# events kebab-case ("shot-on-goal"; "missed-shot"/"blocked-shot" are
+# separate types and don't count), older ones camelCase, and a goal
+# counts as a shot on goal for the scoring team — verified against the
+# NHL's own "sog" field: 2 shots + 1 goal reads as 3.
+SOG_EVENT_TYPES = frozenset({"shot-on-goal", "shotOnGoal", "goal"})
+
 
 class NhlService:
     """Schedule lookup scoped to the configured team."""
@@ -88,12 +96,16 @@ class NhlService:
 
     async def get_live_goals(
         self, game_id: int, team_id: int
-    ) -> tuple[str | None, list[NhlPlay]]:
-        """One play-by-play fetch: top-level game state + the team's goals.
+    ) -> tuple[str | None, list[NhlPlay], dict[int, int]]:
+        """One play-by-play fetch: game state, the team's goals, shots by team.
 
         The worker's steady-state path — a single request replaces the
         schedule lookup (game identity comes from the DB row) and the
-        separate state refresh.
+        separate state refresh. Shot totals are tallied from the same
+        payload by counting ``SOG_EVENT_TYPES`` events per owning
+        team: every shot the goalie faced plus goals (the official SOG
+        column counts goals as shots), with blocked/missed shots
+        excluded as their own event types.
         """
         pbp = await self.client.get_play_by_play(game_id)
         goals = [
@@ -103,7 +115,12 @@ class NhlService:
             and p.details is not None
             and p.details.event_owner_team_id == team_id
         ]
-        return pbp.game_state, goals
+        shots: dict[int, int] = {}
+        for play in pbp.plays:
+            owner = play.details.event_owner_team_id if play.details else None
+            if owner is not None and play.type_desc_key in SOG_EVENT_TYPES:
+                shots[owner] = shots.get(owner, 0) + 1
+        return pbp.game_state, goals, shots
 
     async def get_player(self, player_id: int) -> dict:
         """Player landing payload as a raw dict.
