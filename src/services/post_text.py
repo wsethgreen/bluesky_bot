@@ -1,9 +1,25 @@
-"""Bluesky post text formatting: goal posts and highlight-video captions.
+"""Bluesky post text formatting: goal posts, period-end scoreboards, and
+highlight-video captions.
 
 Pure formatting — no DB, no API clients — so the poll worker can stay
 focused on discovery/persistence and the layout can be tweaked (or
 unit-tested) in one place.
 """
+
+
+def _ordinal(number: int) -> str:
+    """Cardinal with English suffix: 1 → "1st", 4 → "4th", 11 → "11th".
+
+    Separate from ``PostTextBuilder.period_label`` on purpose: that
+    helper bakes in hockey's 3 regulation periods (4+ → "OT"), while
+    period-end headers must render any regulation length — basketball's
+    Q4 is a "4th", not an "OT".
+    """
+    if 10 < number % 100 < 14:
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(number % 10, "th")
+    return f"{number}{suffix}"
 
 
 class PostTextBuilder:
@@ -37,13 +53,14 @@ class PostTextBuilder:
     def scoreboard_lines(
         *,
         period_number: int | None,
-        time_remaining: str | None,
+        time_remaining: str | None = None,
         home_tri: str | None,
         home_score: int | None,
         away_tri: str | None,
         away_score: int | None,
         home_shots: int | None = None,
         away_shots: int | None = None,
+        show_clock: bool = True,
     ) -> list[str]:
         """Minimal ASCII scoreboard (clock, score, shots).
 
@@ -63,29 +80,40 @@ class PostTextBuilder:
         colon, shot counts after the "SOG:" label) so the inner pipes and
         the digits line up between rows. Rules span the widest row, and
         the whole thing widens naturally for pathological data.
+
+        ``show_clock=False`` drops the clock row — for the period-end
+        post the header already names the period, and the clock reads
+        00:00 — leaving only score and shots bracketed by rules:
+
+            -------------------
+            TOR:  1 | CBJ:  0
+            -------------------
+            SOG: 32 | 30
+            -------------------
         """
-        clock = time_remaining or "--:--"
-        period_label = PostTextBuilder.period_label(period_number)
-        # Stopwatch emoji instead of the old text separator: reads as "time
-        # left" on a phone and costs no width in emoji fonts.
-        row_clock = f"{period_label}  ⏱️  {clock}" if period_label else f"⏱️ {clock}"
+        rows: list[str] = []
+        if show_clock:
+            clock = time_remaining or "--:--"
+            period_label = PostTextBuilder.period_label(period_number)
+            # Stopwatch emoji instead of the old text separator: reads as
+            # "time left" on a phone and costs no width in emoji fonts.
+            rows.append(f"{period_label}  ⏱️  {clock}" if period_label else f"⏱️ {clock}")
         home_goals = home_score or 0
         away_goals = away_score or 0
         home_sog = home_shots or 0
         away_sog = away_shots or 0
-        row_score = f"{(home_tri or '?')}: {home_goals:>2} | {(away_tri or '?')}: {away_goals:>2}"
-        row_shots = f"SOG: {home_sog:>2} | {away_sog:>2}"
+        rows.append(
+            f"{(home_tri or '?')}: {home_goals:>2} | {(away_tri or '?')}: {away_goals:>2}"
+        )
+        rows.append(f"SOG: {home_sog:>2} | {away_sog:>2}")
 
-        bar = "-" * max(len(row_clock), len(row_score), len(row_shots))
-        return [
-            bar,
-            row_clock,
-            bar,
-            row_score,
-            bar,
-            row_shots,
-            bar,
-        ]
+        bar = "-" * max(len(row) for row in rows)
+        lines: list[str] = []
+        for row in rows:
+            lines.append(bar)
+            lines.append(row)
+        lines.append(bar)
+        return lines
 
     @staticmethod
     def build_highlight_post_text(
@@ -155,6 +183,63 @@ class PostTextBuilder:
         )
 
         return "\n\n".join(["\n".join(header), "\n".join(scoreboard)])
+
+    @staticmethod
+    def build_period_end_text(
+        *,
+        period_number: int | None,
+        home_tri: str | None,
+        home_score: int | None,
+        away_tri: str | None,
+        away_score: int | None,
+        home_shots: int | None = None,
+        away_shots: int | None = None,
+        unit_word: str = "period",
+        regulation_periods: int = 3,
+    ) -> str:
+        """Build the Bluesky post text for the end of a period.
+
+        Format:
+
+            End of 1st period.
+
+            -------------------
+            TOR:  1 | CBJ:  0
+            -------------------
+            SOG: 32 | 30
+            -------------------
+
+        The header and the scoreboard are joined with a blank line,
+        mirroring the goal post layout; the scoreboard drops its clock
+        row (``show_clock=False``) because the header already names the
+        period and the clock reads 00:00 at the buzzer.
+
+        ``unit_word`` and ``regulation_periods`` are what keep the
+        trigger layer sport-generic: hockey fills them with the defaults
+        ("period", 3), basketball would pass ``unit_word="quarter"``,
+        ``regulation_periods=4``. Past regulation the header collapses
+        to "End of overtime." either way (the shootout, hockey's period
+        5, lands there too). A missing period number renders
+        "End of period.".
+        """
+        if period_number is None:
+            header = f"End of {unit_word}."
+        elif period_number > regulation_periods:
+            header = "End of overtime."
+        else:
+            header = f"End of {_ordinal(period_number)} {unit_word}."
+
+        scoreboard = PostTextBuilder.scoreboard_lines(
+            period_number=period_number,
+            home_tri=home_tri,
+            home_score=home_score,
+            away_tri=away_tri,
+            away_score=away_score,
+            home_shots=home_shots,
+            away_shots=away_shots,
+            show_clock=False,
+        )
+        return "\n\n".join([header, "\n".join(scoreboard)])
 
     @staticmethod
     def build_highlight_video_caption() -> str:

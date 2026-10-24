@@ -32,7 +32,7 @@ from repos.goals_repo import GoalsRepo
 from repos.players_repo import PlayersRepo
 from repos.posts_repo import PostsRepo
 from repos.teams_repo import TeamsRepo
-from services.nhl_service import NhlService
+from services.nhl_service import NhlLiveSnapshot, NhlService
 from services.post_text import PostTextBuilder
 
 if TYPE_CHECKING:
@@ -71,10 +71,12 @@ class PollWorker:
     """One poll cycle for the followed team.
 
     1. Look up today's game in the DB; only hit the schedule API on a miss.
-    2. Fetch one play-by-play payload: game state + the team's goals.
+    2. Fetch one play-by-play payload: game state, the team's goals,
+       the per-period end plays, and both sides' score/SOG header.
     3. Upsert goals, scorer/assister snapshots, and unposted ``Post`` rows
        for the poster: a text post per goal (claimed immediately at
-       detection) and a video post once the highlight clip id appears.
+       detection), a video post once the highlight clip id appears, and
+       an "End of N period." post per ``period-end`` play.
     """
 
     def __init__(
@@ -170,27 +172,29 @@ class PollWorker:
             await session.commit()
             return f"game {game.id} stored (team side not resolved)"
 
-        state, goals, shots = await self._nhl.get_live_goals(game.id, team_id)
+        snap = await self._nhl.get_live_snapshot(game.id, team_id)
         new_text_posts, new_video_posts, players_refreshed = await self._store_goals(
             goals_repo,
             posts,
             players,
             game.id,
-            goals,
+            snap.goals,
             home_tri=game.home_team.abbrev if game.home_team else None,
             away_tri=game.away_team.abbrev if game.away_team else None,
-            home_shots=shots.get(game.home_team.id),
-            away_shots=shots.get(game.away_team.id),
+            home_shots=snap.home.sog,
+            away_shots=snap.away.sog,
         )
-        await self._apply_live_state(games, game.id, state, goals)
+        new_period_posts = await self._store_period_ends(posts, game.id, snap)
+        await self._apply_live_state(games, game.id, snap.game_state, snap.goals)
         await session.commit()
 
         away = game.away_team.abbrev if game.away_team else "?"
         home = game.home_team.abbrev if game.home_team else "?"
         summary = (
-            f"{away} @ {home} ({state or game.game_state}): "
-            f"{len(goals)} goals, {new_text_posts} new text posts, "
+            f"{away} @ {home} ({snap.game_state or game.game_state}): "
+            f"{len(snap.goals)} goals, {new_text_posts} new text posts, "
             f"{new_video_posts} new video posts, "
+            f"{new_period_posts} new period-end posts, "
             f"{players_refreshed} players refreshed"
         )
         logger.info("poll: %s", summary)
@@ -225,25 +229,27 @@ class PollWorker:
             )
 
         team_id = away.id if away.tri_code.upper() == self._team else home.id
-        state, goals, shots = await self._nhl.get_live_goals(row.game_id, team_id)
+        snap = await self._nhl.get_live_snapshot(row.game_id, team_id)
         new_text_posts, new_video_posts, players_refreshed = await self._store_goals(
             goals_repo,
             posts,
             players,
             row.game_id,
-            goals,
+            snap.goals,
             home_tri=home.tri_code,
             away_tri=away.tri_code,
-            home_shots=shots.get(home.id),
-            away_shots=shots.get(away.id),
+            home_shots=snap.home.sog,
+            away_shots=snap.away.sog,
         )
-        self._apply_row_state(row, state, goals)
+        new_period_posts = await self._store_period_ends(posts, row.game_id, snap)
+        self._apply_row_state(row, snap.game_state, snap.goals)
         await session.commit()
 
         summary = (
-            f"{away.tri_code} @ {home.tri_code} ({state or row.game_state}): "
-            f"{len(goals)} goals, {new_text_posts} new text posts, "
+            f"{away.tri_code} @ {home.tri_code} ({snap.game_state or row.game_state}): "
+            f"{len(snap.goals)} goals, {new_text_posts} new text posts, "
             f"{new_video_posts} new video posts, "
+            f"{new_period_posts} new period-end posts, "
             f"{players_refreshed} players refreshed"
         )
         logger.info("poll: %s", summary)
@@ -354,6 +360,55 @@ class PollWorker:
                     event_id,
                 )
         return new_text_posts, new_video_posts, players_refreshed
+
+    async def _store_period_ends(
+        self,
+        posts: PostsRepo,
+        game_id: int,
+        snap: NhlLiveSnapshot,
+    ) -> int:
+        """Queue an "End of N period." post per newly-seen period-end play.
+
+        Dedup rides the same (game, event, kind) key as goal posts: each
+        ``period-end`` play carries a unique ``event_id``, so re-polls
+        claim nothing. The scoreboard text is built here — from the same
+        payload the play came in — and frozen onto the row, so later
+        polls and the poster publish exactly what the header said at
+        claim time.
+
+        Periods whose end was already posted before this code existed —
+        or a bot restart mid-game — simply claim whatever period-end
+        plays the current payload has that aren't in ``posts`` yet.
+
+        Returns the number of newly claimed rows.
+        """
+        new_posts = 0
+        for play in snap.period_ends:
+            if play.event_id is None:
+                continue  # no dedup key → would re-queue every poll
+            text = PostTextBuilder.build_period_end_text(
+                period_number=play.period.number if play.period else None,
+                home_tri=snap.home.abbrev,
+                home_score=snap.home.score,
+                away_tri=snap.away.abbrev,
+                away_score=snap.away.score,
+                home_shots=snap.home.sog,
+                away_shots=snap.away.sog,
+            )
+            if await posts.claim_pending(
+                kind=PostKind.PERIOD_END,
+                game_id=game_id,
+                team=self._team,
+                event_id=play.event_id,
+                text=text,
+            ):
+                new_posts += 1
+                logger.info(
+                    "poll: new period-end post for event %s (period %s)",
+                    play.event_id,
+                    play.period.number if play.period else None,
+                )
+        return new_posts
 
     async def _build_goal_text(
         self,
