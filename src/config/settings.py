@@ -56,7 +56,14 @@ class Settings(BaseSettings):
 
     # App
     log_level: str = Field(default="INFO")
-    env: str = Field(default="dev")
+    env: str = Field(
+        default="dev",
+        description=(
+            "Deployment env; 'local' makes the poster log what would be "
+            "posted (text or caption + highlight URL) instead of calling "
+            "Bluesky"
+        ),
+    )
     run_workers: bool = Field(
         default=True, description="Set false to run the API without background jobs"
     )
@@ -67,6 +74,15 @@ class Settings(BaseSettings):
 
     # Scheduler (Compose+APScheduler singleton). Jobs self-gate on the DB.
     poll_interval_minutes: int = Field(default=5, ge=1)
+    final_grace_minutes: int = Field(
+        default=15,
+        ge=0,
+        description=(
+            "Keep polling a FINAL/OFF game for this long after it ends "
+            "to catch highlight clips the NHL attaches late (usually a "
+            "few minutes after the last goal). 0 disables the grace window."
+        ),
+    )
     post_interval_minutes: int = Field(
         default=1, ge=1, description="Poster interval in minutes (1 = every minute)"
     )

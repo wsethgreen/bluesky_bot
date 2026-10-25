@@ -5,7 +5,9 @@ per-cycle logic (discovery, refresh, goal/post upserts).
 
 Cost per cycle:
 - Game already in DB, not final: 1 call (play-by-play).
-- Game final in DB: 0 calls.
+- Game final in DB: 0 calls once the post-game grace window closes
+  (``final_grace_minutes``); during the window, 1 call per cycle to
+  catch highlight clips that arrive after the final horn.
 - Off-day (cached "no game" check): 0 calls. The negative answer is
   stored per (team, day) in ``game_day_checks``; only the first poll of
   a new day re-checks the schedule API to refresh it.
@@ -54,12 +56,15 @@ async def poll_nhl_live(ctx: WorkerContext) -> str:
         nhl=ctx.nhl,
         sessions=ctx.sessions,
         team_abbreviation=ctx.settings.nhl_team_abbreviation,
+        final_grace=timedelta(minutes=ctx.settings.final_grace_minutes),
     )
     return await worker.poll_once()
 
 
-# Play-by-play states after which nothing more can happen. Polls for these
-# games cost zero API calls.
+# Play-by-play states after which nothing more can happen — except late
+# highlight clips, which the poller keeps looking for until the
+# ``ended_at`` grace window closes. Polls past that window cost
+# zero API calls.
 TERMINAL_STATES = frozenset({"FINAL", "OFF"})
 
 # Player snapshots refresh only when missing or older than this. Keeps the
@@ -85,17 +90,25 @@ class PollWorker:
         nhl: NhlService,
         sessions: async_sessionmaker[AsyncSession],
         team_abbreviation: str,
+        final_grace: timedelta,
     ) -> None:
         self._nhl = nhl
         self._sessions = sessions
         self._team = team_abbreviation.strip().upper()
+        self._final_grace = final_grace
 
-    async def poll_once(self, *, force: bool = False) -> str:
+    async def poll_once(self, *, force: bool = False, day: str | None = None) -> str:
         """Run a single cycle, returning a human-readable summary.
 
-        ``force`` re-polls even games already marked final — used by the
-        manual runner to pick up highlight clips that arrive after the
-        game ends.
+        ``force`` re-polls even games past their grace window — used by
+        the manual runner to pick up highlight clips arbitrarily long
+        after the game ends.
+
+        ``day`` (manual runner, YYYY-MM-DD) targets that date's stored
+        game instead of today's, so a game from a previous day can be
+        re-polled after its date has passed. It never runs discovery or
+        writes a cached "no game" answer — only an already-stored game
+        can be backfilled this way.
         """
         if not self._team:
             return "skipped: NHL_TEAM_ABBREVIATION not set"
@@ -108,8 +121,13 @@ class PollWorker:
             players = PlayersRepo(session)
             checks = GameDayChecksRepo(session)
 
-            game_row = await games.get_game_by_date(self._nhl.today, self._team)
+            lookup_day = day or self._nhl.today
+            game_row = await games.get_game_by_date(lookup_day, self._team)
             if game_row is None:
+                if day is not None:
+                    # Explicit backfill date: discovery is today-only, and
+                    # a "no game" answer for another day must not be cached.
+                    return f"no {self._team} game stored on {lookup_day}"
                 # Gate: a stored "no game today" for this (team, day)
                 # skips discovery entirely (0 API calls). `force` (manual
                 # runner) ignores the cached answer and re-checks the API.
@@ -222,7 +240,11 @@ class PollWorker:
                 teams, games, goals_repo, posts, players, checks, session
             )
 
-        if row.game_state in TERMINAL_STATES and not force:
+        if (
+            row.game_state in TERMINAL_STATES
+            and not force
+            and not self._in_final_grace(row)
+        ):
             return (
                 f"{away.tri_code} @ {home.tri_code} ({row.game_state}): "
                 "final, no check needed"
@@ -517,6 +539,24 @@ class PollWorker:
             updated_at = updated_at.replace(tzinfo=UTC)
         return updated_at >= cutoff
 
+    def _in_final_grace(self, row: Game) -> bool:
+        """Whether a final game is still inside its post-game poll window.
+
+        The NHL often attaches a goal's highlight clip id minutes after
+        the final horn; without this window the terminal short-circuit
+        would skip it — the worst case being an overtime winner, where
+        FINAL lands on the same poll as the goal and the clip arrives
+        one poll later. ``ended_at is None`` (row ended before the
+        column existed, or stamped later) counts as inside the window so
+        the poller stamps it and the window runs from there.
+        """
+        if row.ended_at is None:
+            return True
+        ended = row.ended_at
+        if ended.tzinfo is None:
+            ended = ended.replace(tzinfo=UTC)
+        return datetime.now(UTC) < ended + self._final_grace
+
     async def _apply_live_state(
         self,
         games: GamesRepo,
@@ -535,6 +575,10 @@ class PollWorker:
         """Mutate a managed row in place (caller commits)."""
         if state:
             row.game_state = state
+        if row.game_state in TERMINAL_STATES and row.ended_at is None:
+            # First sighting of the terminal state: start the grace
+            # window during which late highlight clips are still polled.
+            row.ended_at = datetime.now(UTC)
         if goals:
             details = goals[-1].details
             if details is not None:

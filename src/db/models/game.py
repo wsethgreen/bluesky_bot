@@ -28,6 +28,11 @@ class Game(Base):
     )
     game_state: Mapped[str | None] = mapped_column(String(20))
     game_schedule_state: Mapped[str | None] = mapped_column(String(10))
+    # First time the poller saw a terminal (FINAL/OFF) state; gates the
+    # post-game grace window during which late highlight clips are picked up.
+    ended_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     away_team_id: Mapped[int] = mapped_column(
         ForeignKey("teams.id"), nullable=False, index=True
     )
