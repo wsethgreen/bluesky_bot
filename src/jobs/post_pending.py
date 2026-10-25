@@ -9,6 +9,12 @@ that post is already up, standalone otherwise. Rows are claimed
 oldest-first and a goal's text row always precedes its video row, so the
 quote is normally available by the time the video posts. Any failure
 leaves the row unposted so it is retried on the next run.
+
+When ``env == "local"`` nothing is sent to Bluesky: the post's content
+(text, or caption + highlight URL) is logged instead, and the row is
+consumed with a synthetic ``local://`` ref so the queue keeps draining
+and nothing re-logs on the next run. Brightcove and Bluesky credentials
+are not touched in that mode.
 """
 
 from __future__ import annotations
@@ -41,6 +47,10 @@ async def post_pending(ctx: WorkerContext, *, force: bool = False) -> str:
 
     ``force`` (manual runner only) skips the 4-hour posting-window check
     so late posts from a finished game can still go out.
+
+    ``ctx.settings.env == "local"`` logs the post instead of publishing
+    it (see module docstring); the window checks still apply, so ``force``
+    remains the way to drain rows from outside the window.
 
     No game-day gate: off-days with nothing pending cost one indexed
     read. Pending rows outside their window are claimed and rolled back
@@ -77,8 +87,20 @@ async def post_pending(ctx: WorkerContext, *, force: bool = False) -> str:
                         f"{label}: outside 4-hour posting window (ended {window_end})"
                     )
 
-            bsky = BlueskyClient()
             tag = (post.team or "NHL").strip().upper()
+
+            if ctx.settings.env.strip().lower() == "local":
+                # Dry run: log what would go out instead of calling
+                # Bluesky, then consume the row with a synthetic local://
+                # ref so the queue drains instead of re-logging this row
+                # on every run.
+                detail = _would_post_detail(post)
+                await posts.mark_posted(post.id, uri=f"local://{post.kind}/{post.id}")
+                await session.commit()
+                logger.info("local env: would post %s: %s", label, detail)
+                return f"{label}: local env, logged only ({detail})"
+
+            bsky = BlueskyClient()
 
             if post.kind == PostKind.VIDEO:
                 if post.clip_id is None:
@@ -124,6 +146,20 @@ async def post_pending(ctx: WorkerContext, *, force: bool = False) -> str:
                 post.defunct = True
             await session.commit()
             return f"{label}: post failed (attempt {post.attempts})"
+
+
+def _would_post_detail(post: Post) -> str:
+    """Log-ready description of what a local-env run would have published.
+
+    Video rows carry the highlight URL captured at claim time, so the
+    dry run never needs Brightcove to say what would go out.
+    """
+    if post.kind == PostKind.VIDEO:
+        return (
+            f"video caption {post.text!r} (clip {post.clip_id}), "
+            f"highlight {post.highlight_url or '(no highlight url)'}"
+        )
+    return f"text {post.text!r}"
 
 
 async def _quoted_text_ref(posts: PostsRepo, post: Post) -> BlueskyPostRef | None:
