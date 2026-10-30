@@ -41,6 +41,16 @@ class Settings(BaseSettings):
     # NHL team focus
     nhl_team_abbreviation: str = Field(description="Team to follow, e.g. CBJ")
 
+    # NBA content API (team-site videos; see clients/nba_content_client.py)
+    nba_content_base_url: str = Field(
+        default="https://content-api-prod.nba.com",
+        description="Base NBA content API URL",
+    )
+    nba_team_id: int = Field(
+        default=1610612739,
+        description="NBA team ID to follow, e.g. 1610612739 (Cavaliers)",
+    )
+
     # Database
     db_user: str
     db_password: SecretStr
