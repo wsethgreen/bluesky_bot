@@ -1,6 +1,6 @@
 from pydantic import Field, model_validator
 
-from models.base import _Base
+from models.base import BaseModel
 
 
 def _local(value: object) -> str:
@@ -10,7 +10,7 @@ def _local(value: object) -> str:
     return str(value or "")
 
 
-class NhlPlayer(_Base):
+class NhlPlayer(BaseModel):
     """Flat player summary for post text + the players cache.
 
     Flattens the ``/v1/player/{id}/landing`` payload: names and team from

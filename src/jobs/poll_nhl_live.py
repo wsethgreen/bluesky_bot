@@ -26,7 +26,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from db.models.game import Game
 from db.models.goal import Goal
 from models.enum import PostKind
-from models.nhl import NhlPlay, NhlScheduleGame, NhlScheduleTeam
+from models.nhl import (
+    NhlLiveSnapshot,
+    NhlPlay,
+    NhlScheduleGame,
+    NhlScheduleTeam,
+)
 from models.player import NhlPlayer
 from repos.game_day_checks_repo import GameDayChecksRepo
 from repos.games_repo import GamesRepo
@@ -34,7 +39,7 @@ from repos.goals_repo import GoalsRepo
 from repos.players_repo import PlayersRepo
 from repos.posts_repo import PostsRepo
 from repos.teams_repo import TeamsRepo
-from services.nhl_service import NhlLiveSnapshot, NhlService
+from services.nhl_service import NhlService
 from services.post_text import PostTextBuilder
 
 if TYPE_CHECKING:
@@ -77,11 +82,16 @@ class PollWorker:
 
     1. Look up today's game in the DB; only hit the schedule API on a miss.
     2. Fetch one play-by-play payload: game state, the team's goals,
-       the per-period end plays, and both sides' score/SOG header.
+       the per-period end plays, every penalty called, and both sides'
+       score/SOG header.
     3. Upsert goals, scorer/assister snapshots, and unposted ``Post`` rows
        for the poster: a text post per goal (claimed immediately at
-       detection), a video post once the highlight clip id appears, and
-       an "End of N period." post per ``period-end`` play.
+       detection), a video post once the highlight clip id appears, an
+       "End of N period." post per ``period-end`` play — the last one
+       becomes "Final: #CBJ Win! 💥" / "Final: #CBJ Lose" when the
+       game is over — and a penalty post per ``penalty`` play
+       (infraction, the tracked team's resulting strength, and a
+       scoreboard).
     """
 
     def __init__(
@@ -190,6 +200,9 @@ class PollWorker:
             await session.commit()
             return f"game {game.id} stored (team side not resolved)"
 
+        # Both sides were ensured above, so this read always hits a row;
+        # its full name feeds the power-play headline.
+        tracked = await teams.get_team(team_id)
         snap = await self._nhl.get_live_snapshot(game.id, team_id)
         new_text_posts, new_video_posts, players_refreshed = await self._store_goals(
             goals_repo,
@@ -202,7 +215,26 @@ class PollWorker:
             home_shots=snap.home.sog,
             away_shots=snap.away.sog,
         )
-        new_period_posts = await self._store_period_ends(posts, game.id, snap)
+        new_period_posts = await self._store_period_ends(
+            posts,
+            game.id,
+            snap,
+            tracked_team_id=team_id,
+            home_id=game.home_team.id,
+            away_id=game.away_team.id,
+        )
+        new_penalty_posts = await self._store_penalties(
+            posts,
+            players,
+            game.id,
+            snap,
+            tracked_team_id=team_id,
+            tracked_full_name=tracked.full_name if tracked else None,
+            home_id=game.home_team.id,
+            away_id=game.away_team.id,
+            home_tri=game.home_team.abbrev if game.home_team else None,
+            away_tri=game.away_team.abbrev if game.away_team else None,
+        )
         await self._apply_live_state(games, game.id, snap.game_state, snap.goals)
         await session.commit()
 
@@ -213,6 +245,7 @@ class PollWorker:
             f"{len(snap.goals)} goals, {new_text_posts} new text posts, "
             f"{new_video_posts} new video posts, "
             f"{new_period_posts} new period-end posts, "
+            f"{new_penalty_posts} new penalty posts, "
             f"{players_refreshed} players refreshed"
         )
         logger.info("poll: %s", summary)
@@ -250,7 +283,8 @@ class PollWorker:
                 "final, no check needed"
             )
 
-        team_id = away.id if away.tri_code.upper() == self._team else home.id
+        tracked = away if away.tri_code.upper() == self._team else home
+        team_id = tracked.id
         snap = await self._nhl.get_live_snapshot(row.game_id, team_id)
         new_text_posts, new_video_posts, players_refreshed = await self._store_goals(
             goals_repo,
@@ -263,7 +297,26 @@ class PollWorker:
             home_shots=snap.home.sog,
             away_shots=snap.away.sog,
         )
-        new_period_posts = await self._store_period_ends(posts, row.game_id, snap)
+        new_period_posts = await self._store_period_ends(
+            posts,
+            row.game_id,
+            snap,
+            tracked_team_id=team_id,
+            home_id=home.id,
+            away_id=away.id,
+        )
+        new_penalty_posts = await self._store_penalties(
+            posts,
+            players,
+            row.game_id,
+            snap,
+            tracked_team_id=team_id,
+            tracked_full_name=tracked.full_name,
+            home_id=home.id,
+            away_id=away.id,
+            home_tri=home.tri_code,
+            away_tri=away.tri_code,
+        )
         self._apply_row_state(row, snap.game_state, snap.goals)
         await session.commit()
 
@@ -272,6 +325,7 @@ class PollWorker:
             f"{len(snap.goals)} goals, {new_text_posts} new text posts, "
             f"{new_video_posts} new video posts, "
             f"{new_period_posts} new period-end posts, "
+            f"{new_penalty_posts} new penalty posts, "
             f"{players_refreshed} players refreshed"
         )
         logger.info("poll: %s", summary)
@@ -388,6 +442,10 @@ class PollWorker:
         posts: PostsRepo,
         game_id: int,
         snap: NhlLiveSnapshot,
+        *,
+        tracked_team_id: int,
+        home_id: int | None,
+        away_id: int | None,
     ) -> int:
         """Queue an "End of N period." post per newly-seen period-end play.
 
@@ -398,14 +456,32 @@ class PollWorker:
         polls and the poster publish exactly what the header said at
         claim time.
 
+        The game-deciding period-end — the payload's *last* period-end
+        while the state is terminal — swaps its header for the result:
+        "Final: #CBJ Win! 💥" or "Final: #CBJ Lose" from the final
+        score. Only that last play gets it: a backfill after the bot
+        missed the game still posts plain "End of N period." headers
+        for the earlier periods, and a mid-game payload (state not
+        terminal) never claims a result. If the poll catches the final
+        period-end before the feed flips the state, that post degrades
+        to the plain header — text is frozen at claim time.
+
         Periods whose end was already posted before this code existed —
         or a bot restart mid-game — simply claim whatever period-end
         plays the current payload has that aren't in ``posts`` yet.
 
         Returns the number of newly claimed rows.
         """
+        is_game_over = snap.game_state in TERMINAL_STATES
+        tracked_score: int | None = None
+        opponent_score: int | None = None
+        if is_game_over and home_id is not None and away_id is not None:
+            if tracked_team_id == home_id:
+                tracked_score, opponent_score = snap.home.score, snap.away.score
+            elif tracked_team_id == away_id:
+                tracked_score, opponent_score = snap.away.score, snap.home.score
         new_posts = 0
-        for play in snap.period_ends:
+        for index, play in enumerate(snap.period_ends):
             if play.event_id is None:
                 continue  # no dedup key → would re-queue every poll
             text = PostTextBuilder.build_period_end_text(
@@ -416,6 +492,10 @@ class PollWorker:
                 away_score=snap.away.score,
                 home_shots=snap.home.sog,
                 away_shots=snap.away.sog,
+                team_abbrev=self._team,
+                is_final=is_game_over and index == len(snap.period_ends) - 1,
+                tracked_score=tracked_score,
+                opponent_score=opponent_score,
             )
             if await posts.claim_pending(
                 kind=PostKind.PERIOD_END,
@@ -429,6 +509,119 @@ class PollWorker:
                     "poll: new period-end post for event %s (period %s)",
                     play.event_id,
                     play.period.number if play.period else None,
+                )
+        return new_posts
+
+    async def _store_penalties(
+        self,
+        posts: PostsRepo,
+        players: PlayersRepo,
+        game_id: int,
+        snap: NhlLiveSnapshot,
+        *,
+        tracked_team_id: int,
+        tracked_full_name: str | None,
+        home_id: int | None,
+        away_id: int | None,
+        home_tri: str | None,
+        away_tri: str | None,
+    ) -> int:
+        """Queue a penalty post per newly-seen ``penalty`` play.
+
+        Same (game, event, kind) dedup as goal/period-end posts, and
+        the text is frozen on the row at claim time — the strength line
+        in particular, since a later poll sees a different (recovered)
+        situation code. The situation phrase is the tracked team's
+        resulting strength from
+        :class:`services.nhl_game_translator.NhlGameTranslator` (power play /
+        penalty kill / 4 on 4 / even strength for offsetting minors);
+        when the code can't be parsed the post degrades to a bare
+        "penalty" headline rather than guessing. A power play swaps the
+        headline for the shouty variant, which names the tracked team
+        by ``tracked_full_name`` (see
+        :meth:`PostTextBuilder.build_penalty_post_text`).
+
+        The offending team is the play's ``event_owner_team_id``; the
+        "penalty against" side is that same team — the side the call
+        went on, so the line reads "Penalty against VAN — tripping
+        (Elias Pettersson)" with VAN's Pettersson named. The offender's
+        name comes from the players table (ensured just above) and is
+        omitted when the lookup failed — the post still goes out.
+
+        Returns the number of newly claimed rows.
+        """
+        await self._ensure_player_ids(
+            players,
+            {
+                p.committed_by_player_id
+                for p in snap.penalties
+                if p.committed_by_player_id
+            },
+        )
+        new_posts = 0
+        for penalty in snap.penalties:
+            play = penalty.play
+            if play.event_id is None:
+                continue  # no dedup key → would re-queue every poll
+
+            phrase = None
+            if (
+                penalty.strength is not None
+                and home_id is not None
+                and away_id is not None
+            ):
+                phrase = self._nhl.game_translator.strength_phrase(
+                    penalty.strength,
+                    tracked_team_id=tracked_team_id,
+                    home_team_id=home_id,
+                    away_team_id=away_id,
+                )
+
+            # "Penalty against X — infraction (player)": X is the team
+            # the call went on — the offending side, matching the
+            # named player and the headline's man-advantage reading.
+            if penalty.offending_team_id == home_id:
+                opponent_tri = home_tri
+            elif penalty.offending_team_id == away_id:
+                opponent_tri = away_tri
+            else:
+                opponent_tri = None
+
+            offender_name = None
+            if penalty.committed_by_player_id is not None:
+                row = await players.get_player(penalty.committed_by_player_id)
+                if row is not None:
+                    offender_name = f"{row.first_name} {row.last_name}"
+
+            text = PostTextBuilder.build_penalty_post_text(
+                team_abbrev=self._team,
+                situation_phrase=phrase,
+                tracked_full_name=tracked_full_name,
+                opponent_tri=opponent_tri,
+                infraction=penalty.infraction,
+                offender_name=offender_name,
+                period_number=play.period.number if play.period else None,
+                time_remaining=play.time_remaining,
+                home_tri=home_tri,
+                home_score=snap.home.score,
+                away_tri=away_tri,
+                away_score=snap.away.score,
+                home_shots=snap.home.sog,
+                away_shots=snap.away.sog,
+            )
+            if await posts.claim_pending(
+                kind=PostKind.PENALTY,
+                game_id=game_id,
+                team=self._team,
+                event_id=play.event_id,
+                text=text,
+            ):
+                new_posts += 1
+                logger.info(
+                    "poll: new penalty post for event %s (%s, vs %s)",
+                    play.event_id,
+                    penalty.infraction,
+                    opponent_tri,
                 )
         return new_posts
 
@@ -496,9 +689,8 @@ class PollWorker:
     async def _ensure_players(self, players: PlayersRepo, plays: list[NhlPlay]) -> int:
         """Upsert scorer/assister snapshots. Returns API refresh count.
 
-        Get-or-refresh: rows missing or older than ``PLAYER_REFRESH_DAYS``
-        hit the player API, everything else is a local DB read. One bad
-        player never fails the poll.
+        Collects the player ids off the given plays' details and hands
+        them to :meth:`_ensure_player_ids`.
         """
         ids: set[int] = set()
         for play in plays:
@@ -512,6 +704,15 @@ class PollWorker:
             ):
                 if pid is not None:
                     ids.add(pid)
+        return await self._ensure_player_ids(players, ids)
+
+    async def _ensure_player_ids(self, players: PlayersRepo, ids: set[int]) -> int:
+        """Upsert player snapshots for the given ids. Returns API refresh count.
+
+        Get-or-refresh: rows missing or older than ``PLAYER_REFRESH_DAYS``
+        hit the player API, everything else is a local DB read. One bad
+        player never fails the poll.
+        """
         cutoff = datetime.now(UTC) - timedelta(days=PLAYER_REFRESH_DAYS)
         refreshed = 0
         for pid in ids:

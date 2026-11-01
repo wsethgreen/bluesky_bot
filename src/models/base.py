@@ -1,5 +1,6 @@
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel as _BaseModel
+from pydantic import ConfigDict
 
 
-class _Base(BaseModel):
+class BaseModel(_BaseModel):
     model_config = ConfigDict(extra="ignore", populate_by_name=True)

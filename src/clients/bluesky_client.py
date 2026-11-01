@@ -33,30 +33,38 @@ class BlueskyClient:
     def _build_text(self, text, tag):
         return self.text_builder.text(text).tag(f"#{tag}", tag)
 
-    def _build_leading_tag_text(self, text: str, tag: str):
-        """Rich text whose hashtag facet is the leading ``#TAG`` token.
+    def _build_tagged_text(self, text: str, tag: str):
+        """Rich text whose hashtag facet is the first ``#TAG`` in text.
 
-        Goal text posts open with e.g. ``#CBJ goal!``; detect that prefix
-        and attach the tag facet to it so the post starts with a tappable
-        hashtag instead of ending with one. Text without the prefix is
-        sent as plain text.
+        Post formats carry the tag at the front (``#CBJ goal!``) or
+        inside the header (``Final: #CBJ Win! 💥``); find the first
+        ``#{tag}`` occurrence and attach the tag facet there so it
+        renders as a tappable hashtag instead of inert text. Text
+        without the tag is sent as plain text.
         """
-        prefix = f"#{tag}"
+        marker = f"#{tag}"
+        index = text.find(marker)
+        if index == -1:
+            return client_utils.TextBuilder().text(text)
+        head, tail = text[:index], text[index + len(marker) :]
         builder = client_utils.TextBuilder()
-        if text.startswith(prefix):
-            return builder.tag(prefix, tag).text(text[len(prefix) :])
-        return builder.text(text)
+        if head:
+            builder = builder.text(head)
+        builder = builder.tag(marker, tag)
+        if tail:
+            builder = builder.text(tail)
+        return builder
 
     async def post_text(self, text: str, tag: str) -> BlueskyPostRef:
         """Post plain text. Returns the new post's strong ref.
 
-        When ``text`` starts with ``#{tag}`` (the goal post format), that
-        leading hashtag becomes the post's tag facet; there is no
-        trailing hashtag.
+        The first ``#{tag}`` in the text (the goal post format leads
+        with it) becomes the post's tag facet; there is no trailing
+        hashtag.
         """
         await self._login()
         logger.info("posting text post")
-        built_text = self._build_leading_tag_text(text, tag)
+        built_text = self._build_tagged_text(text, tag)
         resp = await self.client.send_post(text=built_text)
         return BlueskyPostRef(uri=resp.uri, cid=resp.cid)
 

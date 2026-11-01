@@ -6,10 +6,10 @@ MP4 URLs (``videoAssets``), unlike the League Pass watch API.
 
 from pydantic import Field, model_validator
 
-from models.base import _Base
+from models.base import BaseModel
 
 
-class NbaVideoRendition(_Base):
+class NbaVideoRendition(BaseModel):
     """One MP4 rendition (keyed by width in ``videoAssets``: 320/960/1280)."""
 
     width: int
@@ -19,14 +19,14 @@ class NbaVideoRendition(_Base):
     duration: int = Field(description="Duration in milliseconds")
 
 
-class NbaVideoCaptions(_Base):
+class NbaVideoCaptions(BaseModel):
     """Caption files under ``videoAssets.cc``."""
 
     srt: str | None = None
     vtt: str | None = None
 
 
-class NbaVideoAssets(_Base):
+class NbaVideoAssets(BaseModel):
     """The mixed ``videoAssets`` bag: rendition widths + ``cc`` + ``duration``.
 
     The raw JSON keys the renditions by width alongside non-rendition keys
@@ -61,7 +61,7 @@ class NbaVideoAssets(_Base):
         return max(candidates, key=lambda r: r.height, default=None)
 
 
-class NbaVideoTaxonomy(_Base):
+class NbaVideoTaxonomy(BaseModel):
     """``taxonomy`` maps ids to display names for related entities."""
 
     categories: dict[str, str] = Field(default_factory=dict)
@@ -71,7 +71,7 @@ class NbaVideoTaxonomy(_Base):
     players: dict[str, str] = Field(default_factory=dict)
 
 
-class NbaContentVideo(_Base):
+class NbaContentVideo(BaseModel):
     """One team-site video (game highlights, media availability, etc.)."""
 
     id: int
@@ -95,7 +95,7 @@ class NbaContentVideo(_Base):
     taxonomy: NbaVideoTaxonomy = Field(default_factory=NbaVideoTaxonomy)
 
 
-class NbaContentVideoResults(_Base):
+class NbaContentVideoResults(BaseModel):
     """``results`` envelope: a page of videos plus paging info.
 
     Note: ``total`` caps at 10000 and ``page_next`` is unreliable (the API
@@ -110,5 +110,5 @@ class NbaContentVideoResults(_Base):
     pages: int | None = None
 
 
-class NbaContentVideoResponse(_Base):
+class NbaContentVideoResponse(BaseModel):
     results: NbaContentVideoResults

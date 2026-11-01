@@ -31,7 +31,7 @@ class PostsRepo:
     async def claim_pending(
         self,
         *,
-        kind: str,
+        kind: PostKind,
         game_id: int,
         team: str,
         event_id: int | None = None,
@@ -39,7 +39,12 @@ class PostsRepo:
         clip_id: int | None = None,
         highlight_url: str | None = None,
     ) -> bool:
-        """Insert as unposted if new. Returns True when inserted, False if seen."""
+        """Insert as unposted if new. Returns True when inserted, False if seen.
+
+        ``kind`` is typed as ``PostKind`` on purpose: the DB column is
+        a plain unconstrained string, so this parameter is where valid
+        values are enforced.
+        """
         result = await self.session.execute(
             pg_insert(Post)
             .values(

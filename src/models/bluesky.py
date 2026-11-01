@@ -2,10 +2,10 @@
 
 from pydantic import ConfigDict
 
-from models.base import _Base
+from models.base import BaseModel
 
 
-class BlueskyPostRef(_Base):
+class BlueskyPostRef(BaseModel):
     """Strong ref (uri + cid) to a published post — enough to quote it.
 
     Frozen because a ref is a value, not a mutable handle. Redeclares the

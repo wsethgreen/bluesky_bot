@@ -1,8 +1,8 @@
 """Bluesky publishing job: post the oldest pending text/video post.
 
 Runs every minute on game days. Claims the oldest ``posted=False`` row
-with ``FOR UPDATE SKIP LOCKED``. Text rows (goal announcements and
-end-of-period scoreboards) go out immediately. Video rows resolve the
+with ``FOR UPDATE SKIP LOCKED``. Text rows (goal announcements,
+end-of-period scoreboards, and penalty updates) go out immediately. Video rows resolve the
 Brightcove MP4, download it,
 and post it with the short caption — quoting the goal's text post when
 that post is already up, standalone otherwise. Rows are claimed
