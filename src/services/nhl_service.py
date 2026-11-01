@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import datetime
-from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 
 from clients.brightcove_client import BrightcoveClient
@@ -12,50 +11,36 @@ from clients.nhl_client import NhlClient
 from clients.nhl_stats_client import NhlStatsClient
 from config.settings import get_settings
 from models.brightcove import BrightcoveVideo
-from models.nhl import NhlPlay, NhlPlayByPlayTeam, NhlScheduleGame, NhlScheduleResponse
+from models.nhl import (
+    NhlLiveSnapshot,
+    NhlPenalty,
+    NhlPlay,
+    NhlPlayByPlay,
+    NhlPlayByPlayTeam,
+    NhlScheduleGame,
+    NhlScheduleResponse,
+    NhlTeamTotals,
+)
 from models.nhl_stats import NhlStatsTeam
+from services.nhl_game_translator import NhlGameTranslator
 from utils.date import normalize_date
 
 
-@dataclass(frozen=True)
-class NhlTeamTotals:
-    """One side's identity and official counts from the pbp header.
-
-    ``None`` fields mean the payload didn't carry that side (never for
-    a real game — the gamecenter UI reads the same fields).
-    """
-
-    team_id: int | None = None
-    abbrev: str | None = None
-    score: int | None = None
-    sog: int | None = None
-
-
-@dataclass(frozen=True)
-class NhlLiveSnapshot:
-    """Everything one play-by-play fetch tells the poller.
-
-    The scoreboard counts come from the payload's own ``awayTeam``/
-    ``homeTeam`` headers (the NHL's official score and shots-on-goal),
-    so no local shot-event tally is needed. ``period_ends`` are the
-    ``period-end`` plays in sequence — each carries the ``event_id``
-    the posts table dedupes on.
-    """
-
-    game_state: str | None
-    goals: list[NhlPlay]  # the followed team's goals, in sequence
-    period_ends: list[NhlPlay]  # one play per finished period
-    home: NhlTeamTotals
-    away: NhlTeamTotals
-
-
 class NhlService:
-    """Schedule lookup scoped to the configured team."""
+    """Schedule lookup scoped to the configured team.
+
+    Owns the API clients plus an :class:`NhlGameTranslator` — the
+    semantic layer that turns feed vocabulary (situation codes, event
+    keys) into domain concepts. The translator is constructor-injected
+    (defaults to a fresh instance) so tests and future callers can
+    swap it.
+    """
 
     def __init__(self) -> None:
         self.settings = get_settings()
         self.client = NhlClient(base_url=self.settings.nhl_web_api_base_url)
         self.stats = NhlStatsClient(base_url=self.settings.nhl_stats_api_base_url)
+        self.game_translator = NhlGameTranslator()
         self._brightcove: BrightcoveClient | None = None
 
     @property
@@ -124,11 +109,15 @@ class NhlService:
 
         The worker's steady-state path — a single request replaces the
         schedule lookup (game identity comes from the DB row) and the
-        separate state refresh. The score/SOG per side and the
-        ``period-end`` plays all come from that same payload: the header
-        counts are the NHL's official numbers (a goal counts as a shot
-        on goal there, exactly like the SOG column on the scoreboard),
-        so no local event tally is needed.
+        separate state refresh. The score/SOG per side, the
+        ``period-end`` plays, and every ``penalty`` play all come from
+        that same payload: the header counts are the NHL's official
+        numbers (a goal counts as a shot on goal there, exactly like
+        the SOG column on the scoreboard), so no local event tally is
+        needed.
+
+        Each penalty's resulting strength is read from the next
+        faceoff after the call (see :meth:`_penalties`).
         """
         pbp = await self.client.get_play_by_play(game_id)
         goals = [
@@ -139,13 +128,70 @@ class NhlService:
             and p.details.event_owner_team_id == team_id
         ]
         period_ends = [p for p in pbp.plays if p.type_desc_key == "period-end"]
+        penalties = self._penalties(pbp)
         return NhlLiveSnapshot(
             game_state=pbp.game_state,
             goals=goals,
             period_ends=period_ends,
+            penalties=penalties,
             home=self._team_totals(pbp.home_team),
             away=self._team_totals(pbp.away_team),
         )
+
+    def _penalties(self, pbp: NhlPlayByPlay) -> list[NhlPenalty]:
+        """Every ``penalty`` play with its resulting strength, in order.
+
+        Skips ``delayed-penalty`` plays — they carry no infraction or
+        offender (the real ``penalty`` play follows at the whistle).
+        Delegates all situation-code interpretation to the injected
+        translator.
+        """
+        plays = pbp.plays
+        home_id = pbp.home_team.id if pbp.home_team else None
+        away_id = pbp.away_team.id if pbp.away_team else None
+        penalties: list[NhlPenalty] = []
+        for index, play in enumerate(plays):
+            if play.type_desc_key != "penalty":
+                continue
+            details = play.details
+            # Resulting strength: the next faceoff after the call —
+            # the feed settles offsetting/coincidental minors there.
+            # Fall back to simulating from the penalty's own code when
+            # the poll caught the call as the newest play.
+            strength = None
+            for later in plays[index + 1 :]:
+                if later.type_desc_key == "faceoff":
+                    strength = self.game_translator.parse_situation_code(
+                        later.situation_code
+                    )
+                    break
+            if strength is None and details is not None:
+                owner = details.event_owner_team_id
+                # Only simulate when the offender is known to be home;
+                # an unknown or away offender with an unparseable
+                # faceoff leaves strength None (post omits the line).
+                if owner is not None and owner == home_id:
+                    strength = self.game_translator.simulate_after_penalty(
+                        play.situation_code, offending_is_home=True
+                    )
+                elif owner is not None and away_id is not None and owner == away_id:
+                    strength = self.game_translator.simulate_after_penalty(
+                        play.situation_code, offending_is_home=False
+                    )
+            penalties.append(
+                NhlPenalty(
+                    play=play,
+                    infraction=details.desc_key if details else None,
+                    minutes=details.duration if details else None,
+                    penalty_type=details.penalty_type if details else None,
+                    offending_team_id=details.event_owner_team_id if details else None,
+                    committed_by_player_id=(
+                        details.committed_by_player_id if details else None
+                    ),
+                    strength=strength,
+                )
+            )
+        return penalties
 
     @staticmethod
     def _team_totals(team: NhlPlayByPlayTeam | None) -> NhlTeamTotals:

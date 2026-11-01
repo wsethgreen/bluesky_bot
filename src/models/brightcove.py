@@ -1,9 +1,9 @@
 from pydantic import Field
 
-from models.base import _Base
+from models.base import BaseModel
 
 
-class BrightcoveSource(_Base):
+class BrightcoveSource(BaseModel):
     """One rendition. Progressive MP4s carry ``container == "MP4"``."""
 
     src: str | None = None
@@ -17,7 +17,7 @@ class BrightcoveSource(_Base):
     duration: int | None = None
 
 
-class BrightcoveVideo(_Base):
+class BrightcoveVideo(BaseModel):
     """Video object from the Playback API (metadata + renditions).
 
     Durations are in milliseconds. ``poster``/``thumbnail`` are flat URLs.

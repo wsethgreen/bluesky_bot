@@ -1,5 +1,5 @@
-"""Bluesky post text formatting: goal posts, period-end scoreboards, and
-highlight-video captions.
+"""Bluesky post text formatting: goal posts, period-end scoreboards,
+penalty posts, and highlight-video captions.
 
 Pure formatting — no DB, no API clients — so the poll worker can stay
 focused on discovery/persistence and the layout can be tweaked (or
@@ -196,6 +196,10 @@ class PostTextBuilder:
         away_shots: int | None = None,
         unit_word: str = "period",
         regulation_periods: int = 3,
+        team_abbrev: str | None = None,
+        is_final: bool = False,
+        tracked_score: int | None = None,
+        opponent_score: int | None = None,
     ) -> str:
         """Build the Bluesky post text for the end of a period.
 
@@ -214,6 +218,20 @@ class PostTextBuilder:
         row (``show_clock=False``) because the header already names the
         period and the clock reads 00:00 at the buzzer.
 
+        When the game is over, the game-deciding period-end's header
+        announces the result instead (the caller passes ``is_final``
+        for that play only):
+
+            Final: #CBJ Win! 💥
+            ...
+            Final: #CBJ Lose
+            ...
+
+        ``tracked_score``/``opponent_score`` are the final counts from
+        the tracked team's side. A tie or a missing count can't claim
+        a result, so the header stays the plain end-of-period line —
+        same principle as a missing strength line on a penalty post.
+
         ``unit_word`` and ``regulation_periods`` are what keep the
         trigger layer sport-generic: hockey fills them with the defaults
         ("period", 3), basketball would pass ``unit_word="quarter"``,
@@ -228,6 +246,18 @@ class PostTextBuilder:
             header = "End of overtime."
         else:
             header = f"End of {_ordinal(period_number)} {unit_word}."
+        if (
+            is_final
+            and team_abbrev
+            and tracked_score is not None
+            and opponent_score is not None
+            and tracked_score != opponent_score
+        ):
+            header = (
+                f"Final: #{team_abbrev} Win! 💥"
+                if tracked_score > opponent_score
+                else f"Final: #{team_abbrev} Lose"
+            )
 
         scoreboard = PostTextBuilder.scoreboard_lines(
             period_number=period_number,
@@ -240,6 +270,93 @@ class PostTextBuilder:
             show_clock=False,
         )
         return "\n\n".join([header, "\n".join(scoreboard)])
+
+    @staticmethod
+    def build_penalty_post_text(
+        *,
+        team_abbrev: str,
+        situation_phrase: str | None,
+        tracked_full_name: str | None,
+        opponent_tri: str | None,
+        infraction: str | None,
+        offender_name: str | None,
+        period_number: int | None,
+        time_remaining: str | None,
+        home_tri: str | None,
+        home_score: int | None,
+        away_tri: str | None,
+        away_score: int | None,
+        home_shots: int | None = None,
+        away_shots: int | None = None,
+    ) -> str:
+        """Build the Bluesky post text for a penalty.
+
+        Format:
+
+            #{TEAM} {situation} ⚡
+            Penalty against {OPPONENT} — {infraction} ({player name}).
+            -------------------
+            2nd ⏱️ 12:34
+            -------------------
+            TOR:  1 | CBJ:  0
+            -------------------
+            SOG: 32 | 30
+            -------------------
+
+        Same shape as the goal post: a leading ``#{TEAM}`` hashtag (the
+        poster facets it into a tappable tag) followed by the situation
+        — the tracked team's resulting strength, e.g. "penalty kill (4
+        on 5)", "4 on 4", or "even strength" for offsetting minors.
+        ``situation_phrase=None`` (unparseable situation code) degrades
+        the headline to "penalty".
+
+        One situation gets the shouty treatment instead — the tracked
+        team's power play:
+
+            #CBJ Jackets on the Powerrrrr Playyyyy! 🗣️
+
+        CBJ fans get the nickname they expect ("Jackets", guaranteed
+        by the abbrev check even if the name lookup failed); any other
+        team shouts its ``tracked_full_name`` ("Columbus Blue Jackets"
+        aside, e.g. "Tampa Bay Lightning"). Without a name to shout
+        (non-CBJ team, ``tracked_full_name=None``) a power play falls
+        back to the plain headline. Every non-power-play situation
+        keeps ``#{TEAM} {phrase} ⚡`` either way.
+
+        The penalty line omits the infraction or the player name when
+        unknown rather than inventing one. Unlike the period-end post
+        the scoreboard keeps its clock row: a penalty freezes play
+        mid-period, so time and period are meaningful.
+        """
+        # "Jackets" for CBJ — the one nickname special case — other
+        # teams are named in full; no name at all means no shout.
+        team_name = "Jackets" if team_abbrev.upper() == "CBJ" else tracked_full_name
+        if (
+            situation_phrase is not None
+            and situation_phrase.startswith("power play")
+            and team_name
+        ):
+            headline = f"#{team_abbrev} {team_name} on the Powerrrrr Playyyyy! 🗣️"
+        else:
+            headline = f"#{team_abbrev} {situation_phrase or 'penalty'} ⚡"
+        detail = f"Penalty against {opponent_tri or '?'}"
+        if infraction:
+            detail += f" — {infraction}"
+        if offender_name:
+            detail += f" ({offender_name})"
+        detail += "."
+
+        scoreboard = PostTextBuilder.scoreboard_lines(
+            period_number=period_number,
+            time_remaining=time_remaining,
+            home_tri=home_tri,
+            home_score=home_score,
+            away_tri=away_tri,
+            away_score=away_score,
+            home_shots=home_shots,
+            away_shots=away_shots,
+        )
+        return "\n\n".join([f"{headline}\n{detail}", "\n".join(scoreboard)])
 
     @staticmethod
     def build_highlight_video_caption() -> str:

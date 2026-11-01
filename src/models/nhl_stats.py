@@ -1,9 +1,9 @@
 from pydantic import Field
 
-from models.base import _Base
+from models.base import BaseModel
 
 
-class NhlStatsTeam(_Base):
+class NhlStatsTeam(BaseModel):
     id: int | None = None
     franchise_id: int | None = Field(default=None, alias="franchiseId")
     full_name: str | None = Field(default=None, alias="fullName")
@@ -12,6 +12,6 @@ class NhlStatsTeam(_Base):
     tri_code: str | None = Field(default=None, alias="triCode")
 
 
-class NhlStatsTeamResponse(_Base):
+class NhlStatsTeamResponse(BaseModel):
     data: list[NhlStatsTeam] = Field(default_factory=list)
     total: int = 0

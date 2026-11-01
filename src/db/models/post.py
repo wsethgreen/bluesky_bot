@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     BigInteger,
-    CheckConstraint,
     DateTime,
     ForeignKey,
     Integer,
@@ -29,20 +28,23 @@ class Post(Base):
     the nullable unique ``clip_id`` column (video rows only). A video
     row may quote its sibling text row via the strong ref captured in
     ``posted_uri``/``posted_cid`` when that text post went out.
+
+    ``kind`` is a plain unconstrained string on purpose: the DB check
+    constraint was dropped (migration a7d1c9e3f5b2) because it
+    duplicated what the code knows. Valid values live in
+    :class:`models.enum.PostKind`, enforced at the API boundary by the
+    typed ``PostsRepo.claim_pending(kind=...)`` parameter.
     """
 
     __tablename__ = "posts"
     __table_args__ = (
-        CheckConstraint(
-            "kind in ('text', 'video', 'period_end')", name="posts_kind_check"
-        ),
         UniqueConstraint(
             "game_id", "event_id", "kind", name="posts_game_event_kind_key"
         ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
     game_id: Mapped[int] = mapped_column(
         ForeignKey("games.game_id"), index=True, nullable=False
     )
