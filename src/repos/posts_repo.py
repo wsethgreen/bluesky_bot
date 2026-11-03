@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from db.models.game import Game
 from db.models.post import Post
 from models.enum import PostKind
 
@@ -75,26 +76,64 @@ class PostsRepo:
         )
         return list(result.scalars().all())
 
-    async def claim_pending_batch(self, limit: int = 10) -> list[Post]:
-        """Lock the oldest unposted, non-defunct rows for this consumer.
+    async def claim_pending_batch(
+        self, limit: int = 10, *, window_hours: int, force: bool = False
+    ) -> list[Post]:
+        """Lock the oldest claimable unposted, non-defunct rows for this consumer.
 
         Skips rows already marked ``defunct`` or that have exhausted
-        ``MAX_ATTEMPTS`` retries. ``FOR UPDATE SKIP LOCKED`` so competing
-        poster consumers never grab the same row. The ``created_at, id``
+        ``MAX_ATTEMPTS`` retries. ``FOR UPDATE OF posts SKIP LOCKED`` so
+        competing poster consumers never grab the same row — only the
+        ``posts`` row is locked, never the joined ``games`` row (the
+        transaction stays open across the video download, and the
+        poller upserts ``games`` every cycle). The ``created_at, id``
         order (text rows are claimed before a goal's video row) is what
         makes the goal text post go out before its highlight video.
+
+        Unless ``force``, a row is only claimable while its game's
+        start time sits inside ``[now - window_hours, now]`` — its
+        posting window (pre-game rows wait for kickoff too). Stale rows
+        awaiting a ``--force`` backfill are therefore never locked, so
+        they cannot block newer in-window rows behind them in the
+        queue.
+
         Callers must commit (or roll back) to release.
         """
-        result = await self.session.execute(
+        stmt = (
             select(Post)
             .where(Post.posted.is_(False))
             .where(Post.defunct.is_(False))
             .where(Post.attempts < MAX_ATTEMPTS)
-            .order_by(Post.created_at, Post.id)
-            .limit(limit)
-            .with_for_update(skip_locked=True)
+        )
+        if not force:
+            now = datetime.now(UTC)
+            # start <= now <= start + window_hours, rewritten as a
+            # pure timestamp range to avoid interval arithmetic.
+            stmt = stmt.join(Game, Game.game_id == Post.game_id).where(
+                Game.start_time <= now,
+                Game.start_time >= now - timedelta(hours=window_hours),
+            )
+        stmt = stmt.order_by(Post.created_at, Post.id).limit(limit)
+        result = await self.session.execute(
+            stmt.with_for_update(of=Post, skip_locked=True)
         )
         return list(result.scalars().all())
+
+    async def count_pending(self) -> int:
+        """Unposted, non-defunct rows still eligible to be claimed.
+
+        Counts regardless of window, so callers can tell "queue empty"
+        apart from "rows waiting outside their window" (which only a
+        ``--force`` run will drain).
+        """
+        result = await self.session.execute(
+            select(func.count())
+            .select_from(Post)
+            .where(Post.posted.is_(False))
+            .where(Post.defunct.is_(False))
+            .where(Post.attempts < MAX_ATTEMPTS)
+        )
+        return int(result.scalar_one())
 
     async def get_posted_text_ref(
         self, game_id: int, event_id: int | None

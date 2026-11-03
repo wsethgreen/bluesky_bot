@@ -42,7 +42,7 @@ def build_job_specs(settings: Settings) -> list[JobSpec]:
             name="NHL live game poller (self-gated to game days)",
             func=poll_nhl_live,
             trigger="interval",
-            trigger_kwargs={"minutes": settings.poll_interval_minutes},
+            trigger_kwargs={"minutes": settings.poller.interval_minutes},
             misfire_grace_time=240,
         ),
         JobSpec(
@@ -50,7 +50,7 @@ def build_job_specs(settings: Settings) -> list[JobSpec]:
             name="Poster (oldest pending text/video post in window)",
             func=post_pending,
             trigger="interval",
-            trigger_kwargs={"minutes": settings.post_interval_minutes},
+            trigger_kwargs={"minutes": settings.poster.interval_minutes},
             misfire_grace_time=240,
         ),
     ]

@@ -5,9 +5,10 @@ per-cycle logic (discovery, refresh, goal/post upserts).
 
 Cost per cycle:
 - Game already in DB, not final: 1 call (play-by-play).
-- Game final in DB: 0 calls once the post-game grace window closes
-  (``final_grace_minutes``); during the window, 1 call per cycle to
-  catch highlight clips that arrive after the final horn.
+- Game final in DB: 1 call per cycle only while some goal still lacks
+  its highlight clip id and the wait is inside the
+  ``final_grace_minutes`` window; 0 calls once clips resolve or the
+  window closes (``poll --force`` picks up stragglers later).
 - Off-day (cached "no game" check): 0 calls. The negative answer is
   stored per (team, day) in ``game_day_checks``; only the first poll of
   a new day re-checks the schedule API to refresh it.
@@ -60,15 +61,16 @@ async def poll_nhl_live(ctx: WorkerContext) -> str:
     worker = PollWorker(
         nhl=ctx.nhl,
         sessions=ctx.sessions,
-        team_abbreviation=ctx.settings.nhl_team_abbreviation,
+        team_abbreviation=ctx.settings.nhl.team_abbreviation,
         final_grace=timedelta(minutes=ctx.settings.final_grace_minutes),
     )
     return await worker.poll_once()
 
 
 # Play-by-play states after which nothing more can happen — except late
-# highlight clips, which the poller keeps looking for until the
-# ``ended_at`` grace window closes. Polls past that window cost
+# highlight clips. The poller keeps polling while a stored goal still
+# lacks its ``highlight_clip_id`` and the ``ended_at`` grace window is
+# open; once clips resolve or the window closes, terminal polls cost
 # zero API calls.
 TERMINAL_STATES = frozenset({"FINAL", "OFF"})
 
@@ -273,15 +275,11 @@ class PollWorker:
                 teams, games, goals_repo, posts, players, checks, session
             )
 
-        if (
-            row.game_state in TERMINAL_STATES
-            and not force
-            and not self._in_final_grace(row)
-        ):
-            return (
-                f"{away.tri_code} @ {home.tri_code} ({row.game_state}): "
-                "final, no check needed"
-            )
+        if row.game_state in TERMINAL_STATES and not force:
+            missing = await goals_repo.count_missing_clips(row.game_id)
+            reason = self._terminal_stop_reason(row, missing)
+            if reason is not None:
+                return f"{away.tri_code} @ {home.tri_code} ({row.game_state}): {reason}"
 
         tracked = away if away.tri_code.upper() == self._team else home
         team_id = tracked.id
@@ -740,16 +738,38 @@ class PollWorker:
             updated_at = updated_at.replace(tzinfo=UTC)
         return updated_at >= cutoff
 
+    def _terminal_stop_reason(self, row: Game, missing_clips: int) -> str | None:
+        """Why a terminal game's poll should be skipped, or None to poll.
+
+        Data-driven rather than timer-only: poll only while new
+        information may still exist — a stored goal whose highlight clip
+        id hasn't arrived — bounded by the ``ended_at`` grace window so
+        a clip that never arrives can't poll forever. A game with no
+        missing clips (including 0-0) has nothing left to wait for and
+        stops immediately, which also makes a generous grace window
+        cheap: past clip resolution, polls cost zero API calls.
+        """
+        if missing_clips == 0:
+            return "final, no highlight clips pending"
+        if not self._in_final_grace(row):
+            return (
+                f"final, {missing_clips} highlight clip(s) still pending "
+                "after grace window"
+            )
+        return None
+
     def _in_final_grace(self, row: Game) -> bool:
-        """Whether a final game is still inside its post-game poll window.
+        """Whether a final game is still inside its post-game clip-wait window.
 
         The NHL often attaches a goal's highlight clip id minutes after
-        the final horn; without this window the terminal short-circuit
-        would skip it — the worst case being an overtime winner, where
-        FINAL lands on the same poll as the goal and the clip arrives
-        one poll later. ``ended_at is None`` (row ended before the
-        column existed, or stamped later) counts as inside the window so
-        the poller stamps it and the window runs from there.
+        the final horn (worst case an overtime winner, where FINAL lands
+        on the same poll as the goal and the clip arrives one poll
+        later). ``_terminal_stop_reason`` polls while clips are pending
+        but only up to this window from ``ended_at``, which doubles as
+        the hard cap on that wait. ``ended_at is None`` (row ended
+        before the column existed, or is stamped later) counts as
+        inside the window so a pending clip keeps the poller running
+        and it stamps the row.
         """
         if row.ended_at is None:
             return True
@@ -834,6 +854,7 @@ class PollWorker:
             start = datetime.now(UTC)
         return Game(
             game_id=game.id,
+            league="nhl",
             season=game.season or 0,
             game_type=game.game_type or 0,
             start_time=start,

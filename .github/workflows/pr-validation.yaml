@@ -22,6 +22,9 @@ jobs:
       - name: Format check
         run: uv run ruff format --check src/
 
+      - name: Unit Tests
+        run: uv run pytest
+
       - name: Package build
         # Guards packaging regressions (e.g. moved modules breaking uv_build).
         run: uv build

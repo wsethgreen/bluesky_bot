@@ -17,10 +17,14 @@ if TYPE_CHECKING:
 class Game(Base):
     __tablename__ = "games"
 
-    # Natural key: NHL-assigned id, always supplied on insert.
+    # Natural key: id assigned by the league's own API (NHL/NBA),
+    # always supplied on insert.
     game_id: Mapped[int] = mapped_column(
         BigInteger, primary_key=True, autoincrement=False
     )
+    # Owning league ("nhl" / "nba"). No DB default (migration
+    # b9c1d2e3f4a5): every insert must state its league explicitly.
+    league: Mapped[str] = mapped_column(String(10), nullable=False)
     season: Mapped[int] = mapped_column(nullable=False)
     game_type: Mapped[int] = mapped_column(nullable=False)
     start_time: Mapped[datetime] = mapped_column(

@@ -25,8 +25,8 @@ class NbaContentClient:
     Unlike the League Pass watch API, these come with plain, DRM-free MP4
     URLs in ``videoAssets`` (see :meth:`get_latest_videos`).
 
-    ``base_url`` and ``team_id`` default to the ``nba_content_base_url`` /
-    ``nba_team_id`` settings; pass them explicitly to override (e.g. to
+    ``base_url`` and ``team_id`` default to the ``nba.content_base_url`` /
+    ``nba.team_id`` settings; pass them explicitly to override (e.g. to
     follow a different team without changing env).
     """
 
@@ -41,8 +41,8 @@ class NbaContentClient:
         # The content API stalls requests carrying a non-browser User-Agent
         # (ReadTimeout); it answers a browser UA in ~150ms.
         self.http = http or HttpClient(headers={"User-Agent": BROWSER_USER_AGENT})
-        self.base_url = (base_url or settings.nba_content_base_url).rstrip("/")
-        self.team_id = int(team_id or settings.nba_team_id)
+        self.base_url = (base_url or settings.nba.content_base_url).rstrip("/")
+        self.team_id = int(team_id or settings.nba.team_id)
 
     async def get_latest_videos(
         self,
