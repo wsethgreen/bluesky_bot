@@ -2,7 +2,7 @@
 
 Runs a single pass of a job without the scheduler, without the game-day
 gate, and (with ``--force``) without the final-state grace window /
-4-hour-window short-circuits. Useful long after a game ends to pick up
+posting-window short-circuits. Useful long after a game ends to pick up
 late-arriving highlight clips.
 
 Run inside the compose network (scheduler container has DB access):
@@ -20,7 +20,7 @@ workers alive and what did they last do?".
 ``poll --date YYYY-MM-DD --force`` re-polls a *previous* day's stored
 game (``poll --force`` only reaches today's game), which is how a
 missed highlight clip is backfilled once its date has passed; the
-matching ``post --force`` then publishes it outside the 4-hour window.
+matching ``post --force`` then publishes it outside the posting window.
 
 ``--dry-run`` for ``post`` claims nothing and posts nothing; it only
 prints the oldest pending posts (goal text + highlight video rows).
@@ -54,7 +54,7 @@ async def _poll(force: bool, day: str | None) -> None:
     worker = PollWorker(
         nhl=nhl,
         sessions=AsyncSessionLocal,
-        team_abbreviation=settings.nhl_team_abbreviation,
+        team_abbreviation=settings.nhl.team_abbreviation,
         final_grace=timedelta(minutes=settings.final_grace_minutes),
     )
     try:
@@ -136,7 +136,7 @@ def main() -> None:
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Poll final games / post outside the 4-hour window",
+        help="Poll final games / post outside the posting window",
     )
     parser.add_argument(
         "--date",

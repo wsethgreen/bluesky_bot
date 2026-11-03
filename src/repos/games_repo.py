@@ -14,7 +14,7 @@ from utils.date import normalize_date
 
 
 class GamesRepo:
-    """Tracked NHL games.
+    """Tracked games, one league per row (see ``Game.league``).
 
     Owns no transactions: methods flush but never commit, so callers
     (workers, routes) control commit/rollback boundaries.

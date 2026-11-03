@@ -38,8 +38,8 @@ class NhlService:
 
     def __init__(self) -> None:
         self.settings = get_settings()
-        self.client = NhlClient(base_url=self.settings.nhl_web_api_base_url)
-        self.stats = NhlStatsClient(base_url=self.settings.nhl_stats_api_base_url)
+        self.client = NhlClient(base_url=self.settings.nhl.web_api_base_url)
+        self.stats = NhlStatsClient(base_url=self.settings.nhl.stats_api_base_url)
         self.game_translator = NhlGameTranslator()
         self._brightcove: BrightcoveClient | None = None
 
@@ -81,7 +81,7 @@ class NhlService:
         later in the week is not "today's game". Returns ``None`` when the
         team doesn't play that day.
         """
-        team = (team_abbreviation or self.settings.nhl_team_abbreviation).strip()
+        team = (team_abbreviation or self.settings.nhl.team_abbreviation).strip()
         if not team:
             raise ValueError(
                 "team abbreviation is required "
@@ -241,7 +241,7 @@ class NhlService:
         if game is None or game.id is None:
             return []
         team = (
-            (team_abbreviation or self.settings.nhl_team_abbreviation).strip().upper()
+            (team_abbreviation or self.settings.nhl.team_abbreviation).strip().upper()
         )
         team_id: int | None = None
         for side in (game.home_team, game.away_team):

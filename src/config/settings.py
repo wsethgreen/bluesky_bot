@@ -1,9 +1,96 @@
-"""Application settings loaded from environment / .env file."""
+"""Application settings loaded from environment / .env file.
+
+Config is grouped by concern — ``settings.nhl.*``, ``settings.nba.*``,
+``settings.poller.*``, ``settings.poster.*`` — instead of one flat
+class. Each group is its own ``BaseSettings`` that reads the same
+``.env`` file under an ``env_prefix`` matching the flat keys already in
+use (``NHL_TEAM_ABBREVIATION``, ``POLL_INTERVAL_MINUTES``, ...), so the
+grouping is Python-side only and no environment variable is renamed.
+
+Shared concerns (Bluesky, Brightcove, HTTP tuning, DB, app) stay on the
+top-level :class:`Settings`, as does ``final_grace_minutes`` (a poll
+tuning knob but kept top-level alongside the other scheduler knobs).
+"""
 
 from functools import lru_cache
 
 from pydantic import Field, SecretStr, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _group_config(env_prefix: str) -> SettingsConfigDict:
+    """model_config for a nested settings group.
+
+    Groups are built by the parent via ``default_factory`` (the parent's
+    env source does not populate nested models without
+    ``env_nested_delimiter``), so each group names its env file and
+    prefix explicitly rather than inheriting the parent's config.
+    """
+    return SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        env_prefix=env_prefix,
+        extra="ignore",
+        case_sensitive=False,
+    )
+
+
+class NhlSettings(BaseSettings):
+    """NHL APIs and the team to follow (env keys: ``NHL_*``)."""
+
+    model_config = _group_config("nhl_")
+
+    # NHL APIs (see nhl-api.md)
+    web_api_base_url: str = Field(description="Base NHL web API URL")
+    stats_api_base_url: str = Field(description="Base NHL stats API URL")
+
+    # Team focus
+    team_abbreviation: str = Field(description="Team to follow, e.g. CBJ")
+
+
+class NbaSettings(BaseSettings):
+    """NBA content API (env keys: ``NBA_*``).
+
+    Used by ``clients/nba_content_client.py`` (team-site videos; no job
+    wired up yet).
+    """
+
+    model_config = _group_config("nba_")
+
+    content_base_url: str = Field(
+        default="https://content-api-prod.nba.com",
+        description="Base NBA content API URL",
+    )
+    team_id: int = Field(
+        default=1610612739,
+        description="NBA team ID to follow, e.g. 1610612739 (Cavaliers)",
+    )
+
+
+class PollerSettings(BaseSettings):
+    """Game poller cadence (env keys: ``POLL_*``)."""
+
+    model_config = _group_config("poll_")
+
+    interval_minutes: int = Field(default=5, ge=1)
+
+
+class PosterSettings(BaseSettings):
+    """Bluesky poster cadence (env keys: ``POST_*``)."""
+
+    model_config = _group_config("post_")
+
+    interval_minutes: int = Field(
+        default=1, ge=1, description="Poster interval in minutes (1 = every minute)"
+    )
+    window_hours: int = Field(
+        default=4,
+        ge=1,
+        description=(
+            "Publish a game's posts only within this many hours of its "
+            "start; --force bypasses the window"
+        ),
+    )
 
 
 class Settings(BaseSettings):
@@ -15,6 +102,12 @@ class Settings(BaseSettings):
         extra="ignore",
         case_sensitive=False,
     )
+
+    # Nested groups (see module docstring)
+    nhl: NhlSettings = Field(default_factory=NhlSettings)
+    nba: NbaSettings = Field(default_factory=NbaSettings)
+    poller: PollerSettings = Field(default_factory=PollerSettings)
+    poster: PosterSettings = Field(default_factory=PosterSettings)
 
     # Bluesky
     bluesky_handle: str = Field(description="Bluesky handle, e.g. user.bsky.social")
@@ -33,23 +126,6 @@ class Settings(BaseSettings):
     http_timeout: float = Field(default=10.0, gt=0)
     http_max_retries: int = Field(default=3, ge=0)
     http_backoff_factor: float = Field(default=0.5, ge=0)
-
-    # NHL APIs (see nhl-api.md)
-    nhl_web_api_base_url: str = Field(description="Base NHL web API URL")
-    nhl_stats_api_base_url: str = Field(description="Base NHL stats API URL")
-
-    # NHL team focus
-    nhl_team_abbreviation: str = Field(description="Team to follow, e.g. CBJ")
-
-    # NBA content API (team-site videos; see clients/nba_content_client.py)
-    nba_content_base_url: str = Field(
-        default="https://content-api-prod.nba.com",
-        description="Base NBA content API URL",
-    )
-    nba_team_id: int = Field(
-        default=1610612739,
-        description="NBA team ID to follow, e.g. 1610612739 (Cavaliers)",
-    )
 
     # Database
     db_user: str
@@ -83,18 +159,16 @@ class Settings(BaseSettings):
     )
 
     # Scheduler (Compose+APScheduler singleton). Jobs self-gate on the DB.
-    poll_interval_minutes: int = Field(default=5, ge=1)
     final_grace_minutes: int = Field(
         default=15,
         ge=0,
         description=(
-            "Keep polling a FINAL/OFF game for this long after it ends "
-            "to catch highlight clips the NHL attaches late (usually a "
-            "few minutes after the last goal). 0 disables the grace window."
+            "How long after a FINAL/OFF game ends to keep polling for "
+            "highlight clips the NHL attaches late — the hard cap on "
+            "the data-driven clip wait (polling also stops as soon as "
+            "every goal has its clip, so a larger value costs nothing "
+            "once clips resolve). 0 disables the wait."
         ),
-    )
-    post_interval_minutes: int = Field(
-        default=1, ge=1, description="Poster interval in minutes (1 = every minute)"
     )
     job_run_retention_days: int = Field(
         default=7,

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models.goal import Goal
@@ -57,3 +57,19 @@ class GoalsRepo:
             select(Goal).where(Goal.game_id == game_id).order_by(Goal.event_id)
         )
         return list(result.scalars().all())
+
+    async def count_missing_clips(self, game_id: int) -> int:
+        """Goals in a game still lacking their highlight clip id.
+
+        The NHL attaches clip ids minutes after the final horn, so a
+        non-zero count means late-arriving information may still exist;
+        zero means no clip can change anything. The poll worker's
+        terminal short-circuit keys off this instead of a fixed timer
+        alone.
+        """
+        result = await self.session.execute(
+            select(func.count())
+            .select_from(Goal)
+            .where(Goal.game_id == game_id, Goal.highlight_clip_id.is_(None))
+        )
+        return int(result.scalar_one())

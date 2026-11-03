@@ -31,8 +31,8 @@ async def _run_scheduler() -> None:
     scheduler.start()
     logger.info(
         "scheduler started (poll every %dm, post every %dm, %s)",
-        settings.poll_interval_minutes,
-        settings.post_interval_minutes,
+        settings.poller.interval_minutes,
+        settings.poster.interval_minutes,
         settings.app_timezone,
     )
 
