@@ -130,12 +130,13 @@ class PostTextBuilder:
         away_shots: int | None = None,
         time_remaining: str | None,
         period_number: int | None,
+        situation_phrase: str | None = None,
     ) -> str:
         """Build the Bluesky post text for a goal.
 
         Format:
 
-            #{TEAM} goal!
+            #{TEAM} {situation} goal!
             🏒⚫ {Scorer Name} ({season goals})
             Assists: {Assist1 Name} ({season assists}), {Assist2 Name} ({season assists})
             -------------------
@@ -148,8 +149,12 @@ class PostTextBuilder:
 
         The leading ``#{TEAM}`` is a real hashtag: the poster detects the
         prefix and attaches the tag facet to it, so the post opens with a
-        tappable ``#CBJ goal!``. The assists line is omitted when there are
-        no assisting players. The header and the scoreboard are joined
+        tappable ``#CBJ power play goal!``. The situation word comes from
+        :meth:`NhlGameTranslator.goal_situation_phrase` — "power play",
+        "short handed", or "empty net" — and ``None`` (even strength, or
+        an unparseable situation code) drops the word entirely, leaving
+        the plain ``#{TEAM} goal!``. The assists line is omitted when there
+        are no assisting players. The header and the scoreboard are joined
         with a blank line between them, while each group keeps single
         line breaks internally.
         """
@@ -158,8 +163,13 @@ class PostTextBuilder:
             if scorer is not None
             else "Unknown"
         )
+        headline = (
+            f"#{team_abbrev} {situation_phrase} goal!"
+            if situation_phrase
+            else f"#{team_abbrev} goal!"
+        )
         header = [
-            f"#{team_abbrev} goal!",
+            headline,
             f"🏒⚫ {scorer_name} ({scorer_season_goals})",
         ]
 
