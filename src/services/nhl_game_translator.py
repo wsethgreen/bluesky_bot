@@ -28,11 +28,17 @@ already settles offsetting and coincidental minors there (a fighting
 pair returns to ``1551``), which is why the faceoff — not "the next
 code that differs" — is the anchor: the latter would run past an
 offsetting penalty into an unrelated later state.
+
+A *goal* play's own code is the opposite: it describes the state the
+goal was scored in, so goal labels read straight off the goal play —
+no faceoff lookup needed. Verified against the 2026-11-03 slate:
+``1541`` on an away power-play goal (2026020236/444) and ``0651`` on
+an empty-netter (2026020238/1106, the *scoring* side's digit still 1).
 """
 
 from __future__ import annotations
 
-from models.nhl import SkaterStrength
+from models.nhl import GameSituation, SkaterStrength
 
 
 class NhlGameTranslator:
@@ -56,6 +62,24 @@ class NhlGameTranslator:
         if code is None or len(code) != 4 or not code.isdigit():
             return None
         return SkaterStrength(away_skaters=int(code[1]), home_skaters=int(code[2]))
+
+    @staticmethod
+    def parse_situation_state(code: str | None) -> GameSituation | None:
+        """Full state (goalies *and* skaters) from a 4-digit code.
+
+        Same strictness as :meth:`parse_situation_code` — wrong length or
+        non-digit input returns ``None`` rather than guessing: an unlabelled
+        "goal!" headline beats a wrong one. Goalie digits are read as
+        "in net" unless they are the feed's ``0`` (pulled).
+        """
+        if code is None or len(code) != 4 or not code.isdigit():
+            return None
+        return GameSituation(
+            away_goalie_in_net=code[0] != "0",
+            away_skaters=int(code[1]),
+            home_skaters=int(code[2]),
+            home_goalie_in_net=code[3] != "0",
+        )
 
     @staticmethod
     def simulate_after_penalty(
@@ -110,3 +134,53 @@ class NhlGameTranslator:
         if ours < theirs:
             return f"penalty kill ({ours} on {theirs})"
         return "even strength" if ours == 5 else f"{ours} on {theirs}"
+
+    @staticmethod
+    def goal_situation_phrase(
+        situation: GameSituation | None,
+        *,
+        tracked_team_id: int,
+        home_team_id: int,
+        away_team_id: int,
+    ) -> str | None:
+        """Headline label for a goal scored in ``situation`` (``None`` = plain).
+
+        ``None`` means "no label": even strength — 5 on 5, 4 on 4 after
+        offsetting minors, 3 on 3 in overtime — as well as anything
+        unresolvable (unparseable code, a tracked team that is neither
+        side of the matchup) all fall back to the plain ``#{TEAM} goal!``.
+        The labels are "power play", "short handed", and "empty net",
+        which the post builder renders as e.g. ``#CBJ power play goal!``.
+
+        Order matters, and each branch is anchored on a real payload:
+
+        1. **Empty net first** — the *opponent's* goalie digit is 0.
+           Strength alone gets this backwards: a team trailing late pulls
+           its goalie, so the leader's empty-netter arrives while they are
+           being outskated 5 on 6 and would read "short handed"
+           (2026020241 event 1038, code ``1560``). The mirror image
+           exists too — the trailing scorer's *own* digit is 0
+           (2026020237 events 1047/1063, code ``0651``), which is an
+           extra-attacker goal, not an empty-net one.
+        2. **Power play / short handed** — more skaters than the opponent,
+           or fewer (2026020236 event 444, ``1541``: the away side scores
+           on a home penalty kill).
+        3. **Even strength** → ``None``.
+        """
+        if situation is None:
+            return None
+        if tracked_team_id == home_team_id:
+            ours, theirs = situation.home_skaters, situation.away_skaters
+            opponent_in_net = situation.away_goalie_in_net
+        elif tracked_team_id == away_team_id:
+            ours, theirs = situation.away_skaters, situation.home_skaters
+            opponent_in_net = situation.home_goalie_in_net
+        else:
+            return None
+        if not opponent_in_net:
+            return "empty net"
+        if ours > theirs:
+            return "power play"
+        if ours < theirs:
+            return "short handed"
+        return None

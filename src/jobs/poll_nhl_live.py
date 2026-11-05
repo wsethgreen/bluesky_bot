@@ -88,12 +88,13 @@ class PollWorker:
        score/SOG header.
     3. Upsert goals, scorer/assister snapshots, and unposted ``Post`` rows
        for the poster: a text post per goal (claimed immediately at
-       detection), a video post once the highlight clip id appears, an
-       "End of N period." post per ``period-end`` play — the last one
-       becomes "Final: #CBJ Win! 💥" / "Final: #CBJ Lose" when the
-       game is over — and a penalty post per ``penalty`` play
-       (infraction, the tracked team's resulting strength, and a
-       scoreboard).
+       detection, headlined with the goal's situation — "power play",
+       "short handed", "empty net" — unless it was even strength), a video
+       post once the highlight clip id appears, an "End of N period." post
+       per ``period-end`` play — the last one becomes "Final: #CBJ Win! 💥"
+       / "Final: #CBJ Lose" when the game is over — and a penalty post per
+       ``penalty`` play (infraction, the tracked team's resulting strength,
+       and a scoreboard).
     """
 
     def __init__(
@@ -216,6 +217,9 @@ class PollWorker:
             away_tri=game.away_team.abbrev if game.away_team else None,
             home_shots=snap.home.sog,
             away_shots=snap.away.sog,
+            tracked_team_id=team_id,
+            home_id=game.home_team.id,
+            away_id=game.away_team.id,
         )
         new_period_posts = await self._store_period_ends(
             posts,
@@ -294,6 +298,9 @@ class PollWorker:
             away_tri=away.tri_code,
             home_shots=snap.home.sog,
             away_shots=snap.away.sog,
+            tracked_team_id=team_id,
+            home_id=home.id,
+            away_id=away.id,
         )
         new_period_posts = await self._store_period_ends(
             posts,
@@ -350,6 +357,10 @@ class PollWorker:
         away_tri: str | None = None,
         home_shots: int | None = None,
         away_shots: int | None = None,
+        *,
+        tracked_team_id: int,
+        home_id: int | None,
+        away_id: int | None,
     ) -> tuple[int, int, int]:
         """Upsert goals, players, and the pending Bluesky posts.
 
@@ -371,6 +382,11 @@ class PollWorker:
         only on first detection — re-polls see the existing goal row and
         skip it — and the next scheduled API refresh overwrites the row
         with official totals.
+
+        Each goal's headline situation ("power play", "short handed",
+        "empty net") is read off its own play's situation code — a goal
+        play's code describes the state the goal was scored in — so the
+        team ids are required here (see :meth:`_goal_situation_phrase`).
 
         Returns ``(new text posts, new video posts, players refreshed
         from API)``.
@@ -394,11 +410,18 @@ class PollWorker:
         players_refreshed = await self._ensure_players(players, plays)
         await self._bump_player_stats(players, new_goals)
 
+        plays_by_event = {p.event_id: p for p in plays if p.event_id is not None}
         new_text_posts = 0
         for goal in goals:
             text = await self._build_goal_text(
                 players,
                 goal,
+                situation_phrase=self._goal_situation_phrase(
+                    plays_by_event.get(goal.event_id),
+                    tracked_team_id=tracked_team_id,
+                    home_id=home_id,
+                    away_id=away_id,
+                ),
                 home_tri=home_tri,
                 away_tri=away_tri,
                 home_shots=home_shots,
@@ -628,12 +651,18 @@ class PollWorker:
         players: PlayersRepo,
         goal,
         *,
+        situation_phrase: str | None = None,
         home_tri: str | None = None,
         away_tri: str | None = None,
         home_shots: int | None = None,
         away_shots: int | None = None,
     ) -> str | None:
-        """Build post text for a goal, looking up player rows from the DB."""
+        """Build post text for a goal, looking up player rows from the DB.
+
+        ``situation_phrase`` (from :meth:`_goal_situation_phrase`) is the
+        headline label — "power play" / "short handed" / "empty net" — and
+        ``None`` leaves the plain "goal!" headline.
+        """
         if goal is None:
             return None
 
@@ -654,6 +683,7 @@ class PollWorker:
 
         return PostTextBuilder.build_highlight_post_text(
             team_abbrev=self._team,
+            situation_phrase=situation_phrase,
             scorer=scorer,
             scorer_season_goals=scorer_season_goals,
             assists=assist_players,
@@ -665,6 +695,42 @@ class PollWorker:
             away_shots=away_shots,
             time_remaining=goal.time_remaining,
             period_number=goal.period_number,
+        )
+
+    def _goal_situation_phrase(
+        self,
+        play: NhlPlay | None,
+        *,
+        tracked_team_id: int | None,
+        home_id: int | None,
+        away_id: int | None,
+    ) -> str | None:
+        """Headline label for a goal play, or ``None`` for the plain one.
+
+        Parses the play's own situation code — unlike a penalty play
+        (whose code describes the pre-call state), a goal play's code
+        describes the state the goal was scored in — then lets the
+        translator pick the label: "empty net" when the *opponent's*
+        goalie is out, otherwise "power play" / "short handed" by skater
+        counts, otherwise ``None`` for even strength.
+
+        Every missing piece degrades to ``None`` rather than a guess: no
+        play, an unparseable code, or team ids that don't resolve the
+        tracked side.
+        """
+        if (
+            play is None
+            or tracked_team_id is None
+            or home_id is None
+            or away_id is None
+        ):
+            return None
+        translator = self._nhl.game_translator
+        return translator.goal_situation_phrase(
+            translator.parse_situation_state(play.situation_code),
+            tracked_team_id=tracked_team_id,
+            home_team_id=home_id,
+            away_team_id=away_id,
         )
 
     @staticmethod

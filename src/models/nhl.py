@@ -161,6 +161,25 @@ class SkaterStrength(BaseModel):
         return -1, -1
 
 
+class GameSituation(BaseModel):
+    """Full 4-digit situation state: goalie presence and skater counts.
+
+    ``SkaterStrength`` deliberately drops the goalie digits — a penalty
+    post only cares about the skater matchup. A goal post needs them:
+    "empty net" is the *opponent's* goalie digit reading 0, and that
+    can't be recovered from the skater counts (a team trailing late
+    pulls its own goalie and still scores — 5 on 6, but not into an
+    empty net). Frozen, like ``SkaterStrength``.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    away_goalie_in_net: bool
+    away_skaters: int
+    home_skaters: int
+    home_goalie_in_net: bool
+
+
 class NhlPenalty(BaseModel):
     """One ``penalty`` play plus the strength that resulted from it.
 
