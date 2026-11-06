@@ -74,3 +74,9 @@ class TestGoalPostLayout:
     def test_unknown_scorer_is_not_invented(self) -> None:
         lines = build(scorer=None).splitlines()
         assert lines[1] == "🏒⚫ Unknown (7)"
+
+    def test_shootout_goal_omits_scorer_total(self) -> None:
+        # None means "no total to show": shootout attempts have no
+        # official season goal count, so the line is just the name.
+        lines = build(scorer_season_goals=None).splitlines()
+        assert lines[1] == "🏒⚫ Kirill Marchenko"
