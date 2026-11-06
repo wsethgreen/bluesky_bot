@@ -17,6 +17,7 @@ from typing import Any
 
 from config.settings import Settings
 from jobs.base import JobFunc
+from jobs.poll_nba_live import poll_nba_live
 from jobs.poll_nhl_live import poll_nhl_live
 from jobs.post_pending import post_pending
 
@@ -43,6 +44,14 @@ def build_job_specs(settings: Settings) -> list[JobSpec]:
             func=poll_nhl_live,
             trigger="interval",
             trigger_kwargs={"minutes": settings.poller.interval_minutes},
+            misfire_grace_time=240,
+        ),
+        JobSpec(
+            id="nba_live_poller",
+            name="NBA live game poller (self-gated to game days)",
+            func=poll_nba_live,
+            trigger="interval",
+            trigger_kwargs={"minutes": settings.nba.poll_interval_minutes},
             misfire_grace_time=240,
         ),
         JobSpec(

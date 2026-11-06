@@ -135,7 +135,9 @@ class PollWorker:
             checks = GameDayChecksRepo(session)
 
             lookup_day = day or self._nhl.today
-            game_row = await games.get_game_by_date(lookup_day, self._team)
+            game_row = await games.get_game_by_date(
+                lookup_day, self._team, league="nhl"
+            )
             if game_row is None:
                 if day is not None:
                     # Explicit backfill date: discovery is today-only, and

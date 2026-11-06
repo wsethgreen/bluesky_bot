@@ -14,6 +14,14 @@ logger = logging.getLogger(__name__)
 # GET is idempotent, so these are safe to retry.
 RETRYABLE_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
 
+# Browser-like User-Agent for APIs that block non-browser clients: the
+# NBA content API hangs on the default "bluesky-bot/..." UA and ESPN's
+# site API answers 403 — both reply normally to a real browser string.
+BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+)
+
 # TransportError is the base of TimeoutException, NetworkError, and
 # ProtocolError (e.g. RemoteProtocolError). Non-transport errors such as
 # InvalidURL, TooManyRedirects, or HTTPStatusError are not retried here.

@@ -5,16 +5,9 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Any
 
-from clients.http_client import HttpClient
+from clients.http_client import BROWSER_USER_AGENT, HttpClient
 from config.settings import get_settings
 from models.nba_content import NbaContentVideo, NbaContentVideoResponse
-
-# The API hangs on non-browser User-Agents (e.g. HttpClient's default
-# "bluesky-bot/0.1.0"), so send a browser-like one.
-BROWSER_USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
-)
 
 
 class NbaContentClient:

@@ -17,6 +17,7 @@ from config.settings import get_settings
 from db.engine import engine
 from db.session import AsyncSessionLocal
 from jobs.base import WorkerContext
+from services.nba_service import NbaService
 from services.nhl_service import NhlService
 from workers.scheduler import build_scheduler
 
@@ -26,12 +27,15 @@ logger = logging.getLogger(__name__)
 async def _run_scheduler() -> None:
     settings = get_settings()
     nhl = NhlService()
-    ctx = WorkerContext(settings=settings, nhl=nhl, sessions=AsyncSessionLocal)
+    nba = NbaService()
+    ctx = WorkerContext(settings=settings, nhl=nhl, nba=nba, sessions=AsyncSessionLocal)
     scheduler = build_scheduler(ctx)
     scheduler.start()
     logger.info(
-        "scheduler started (poll every %dm, post every %dm, %s)",
+        "scheduler started (nhl poll every %dm, nba poll every %dm, "
+        "post every %dm, %s)",
         settings.poller.interval_minutes,
+        settings.nba.poll_interval_minutes,
         settings.poster.interval_minutes,
         settings.app_timezone,
     )
@@ -52,6 +56,7 @@ async def _run_scheduler() -> None:
         scheduler.shutdown(wait=False)
         await nhl.client.http.aclose()
         await nhl.stats.http.aclose()
+        await nba.client.http.aclose()
         await engine.dispose()
 
 

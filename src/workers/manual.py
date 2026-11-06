@@ -10,6 +10,7 @@ Run inside the compose network (scheduler container has DB access):
     docker compose exec scheduler python -m workers.manual status
     docker compose exec scheduler python -m workers.manual poll --force
     docker compose exec scheduler python -m workers.manual poll --date 2026-10-24 --force
+    docker compose exec scheduler python -m workers.manual poll-nba --force
     docker compose exec scheduler python -m workers.manual post --force
     docker compose exec scheduler python -m workers.manual post --dry-run
 
@@ -38,10 +39,12 @@ from config.settings import get_settings
 from db.engine import engine
 from db.session import AsyncSessionLocal
 from jobs.base import WorkerContext
+from jobs.poll_nba_live import NbaPollWorker
 from jobs.poll_nhl_live import PollWorker
 from jobs.post_pending import post_pending
 from repos.job_runs_repo import JobRunsRepo
 from repos.posts_repo import PostsRepo
+from services.nba_service import NbaService
 from services.nhl_service import NhlService
 from utils.date import normalize_date
 
@@ -66,10 +69,30 @@ async def _poll(force: bool, day: str | None) -> None:
         await engine.dispose()
 
 
+async def _poll_nba(force: bool) -> None:
+    # No --date backfill: ESPN serves today's scoreboard only, so there
+    # is no previous day's game to re-poll (the NHL poller's --date has
+    # no NBA equivalent).
+    settings = get_settings()
+    nba = NbaService()
+    worker = NbaPollWorker(
+        nba=nba,
+        sessions=AsyncSessionLocal,
+        team_abbreviation=settings.nba.team_abbreviation,
+    )
+    try:
+        summary = await worker.poll_once(force=force)
+        print(f"poll-nba: {summary}")
+    finally:
+        await nba.client.http.aclose()
+        await engine.dispose()
+
+
 async def _post(force: bool, dry_run: bool) -> None:
     settings = get_settings()
     nhl = NhlService()
-    ctx = WorkerContext(settings=settings, nhl=nhl, sessions=AsyncSessionLocal)
+    nba = NbaService()
+    ctx = WorkerContext(settings=settings, nhl=nhl, nba=nba, sessions=AsyncSessionLocal)
     try:
         if dry_run:
             async with AsyncSessionLocal() as session:
@@ -90,6 +113,7 @@ async def _post(force: bool, dry_run: bool) -> None:
     finally:
         await nhl.client.http.aclose()
         await nhl.stats.http.aclose()
+        await nba.client.http.aclose()
         await engine.dispose()
 
 
@@ -129,14 +153,15 @@ def main() -> None:
     )
     parser.add_argument(
         "action",
-        choices=["poll", "post", "status"],
-        help="poll: run one poll cycle; post: post oldest pending post; "
+        choices=["poll", "poll-nba", "post", "status"],
+        help="poll: one NHL poll cycle; poll-nba: one NBA poll cycle; "
+        "post: post oldest pending post; "
         "status: latest job run per job + pending posts",
     )
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Poll final games / post outside the posting window",
+        help="Poll settled games / post outside the posting window",
     )
     parser.add_argument(
         "--date",
@@ -161,6 +186,8 @@ def main() -> None:
 
     if args.action == "poll":
         asyncio.run(_poll(force=args.force, day=args.date))
+    elif args.action == "poll-nba":
+        asyncio.run(_poll_nba(force=args.force))
     elif args.action == "post":
         asyncio.run(_post(force=args.force, dry_run=args.dry_run))
     else:

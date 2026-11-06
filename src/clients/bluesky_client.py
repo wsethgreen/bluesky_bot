@@ -1,4 +1,4 @@
-"""Bluesky client for posting goal text and highlight clips (single account)."""
+"""Bluesky client for posting text and highlight clips to a team account."""
 
 from __future__ import annotations
 
@@ -6,28 +6,28 @@ import logging
 
 from atproto import AsyncClient, client_utils, models
 
-from config.settings import get_settings
 from models.bluesky import BlueskyPostRef
 
 logger = logging.getLogger(__name__)
 
 
 class BlueskyClient:
-    """Post text/video to Bluesky.
+    """Post text/video to Bluesky from one team's account.
 
-    Credentials come from Settings (``.env`` locally, SSM-fed env vars in
-    Lambda) — one account, no per-team switching.
+    The caller injects the credentials — usually pulled from a Settings
+    account group (``settings.cbj`` / ``settings.cavs``) — so this class
+    has no knowledge of settings, accounts, or leagues and the same
+    client works for any Bluesky account.
     """
 
-    def __init__(self) -> None:
-        self.settings = get_settings()
-        self._username = self.settings.bluesky_handle
-        self._password = self.settings.bluesky_app_password.get_secret_value()
+    def __init__(self, account_handle: str, account_password: str) -> None:
+        self._username = account_handle
+        self._password = account_password
         self.client = AsyncClient()
         self.text_builder = client_utils.TextBuilder()
 
     async def _login(self) -> None:
-        logger.info("logging into bsky")
+        logger.info("logging into bsky as %s", self._username)
         await self.client.login(self._username, self._password)
 
     def _build_text(self, text, tag):
