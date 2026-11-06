@@ -96,3 +96,50 @@ class TestFinalResultHeader:
             opponent_score=1,
         )
         assert text.splitlines()[0] == "End of 3rd period."
+
+
+class TestShootoutPeriodEnd:
+    def test_shootout_period_is_not_overtime(self) -> None:
+        # Period 5 with periodType "SO": hockey's shootout — neither
+        # an ordinal period nor overtime (2026020258, DAL @ CBJ).
+        text = build(period_number=5, period_type="SO")
+        assert text.splitlines()[0] == "End of shootout."
+
+    def test_period_five_without_type_stays_overtime(self) -> None:
+        # No period type on the payload keeps the old reading: any
+        # period past regulation is overtime.
+        assert build(period_number=5).startswith("End of overtime.")
+
+    def test_final_win_tagged_shootout(self) -> None:
+        text = build(
+            period_number=5,
+            period_type="SO",
+            team_abbrev="CBJ",
+            is_final=True,
+            tracked_score=2,
+            opponent_score=1,
+        )
+        assert text.splitlines()[0] == "Final: #CBJ Win! 💥 (SO)"
+
+    def test_final_lose_tagged_shootout(self) -> None:
+        text = build(
+            period_number=5,
+            period_type="SO",
+            team_abbrev="CBJ",
+            is_final=True,
+            tracked_score=1,
+            opponent_score=2,
+        )
+        assert text.splitlines()[0] == "Final: #CBJ Lose (SO)"
+
+    def test_non_shootout_final_keeps_plain_result(self) -> None:
+        # An OT winner (period 4, type OT) gets no (SO) tag.
+        text = build(
+            period_number=4,
+            period_type="OT",
+            team_abbrev="CBJ",
+            is_final=True,
+            tracked_score=2,
+            opponent_score=1,
+        )
+        assert text.splitlines()[0] == "Final: #CBJ Win! 💥"

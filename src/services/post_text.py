@@ -120,7 +120,7 @@ class PostTextBuilder:
         *,
         team_abbrev: str,
         scorer: object | None,
-        scorer_season_goals: int,
+        scorer_season_goals: int | None,
         assists: list[object | None],
         home_tri: str | None,
         home_score: int | None,
@@ -154,7 +154,10 @@ class PostTextBuilder:
         "short handed", or "empty net" — and ``None`` (even strength, or
         an unparseable situation code) drops the word entirely, leaving
         the plain ``#{TEAM} goal!``. The assists line is omitted when there
-        are no assisting players. The header and the scoreboard are joined
+        are no assisting players. ``scorer_season_goals=None`` omits the
+        parenthetical total entirely — the caller uses that for shootout
+        attempts, which have no official season total. The header and the
+        scoreboard are joined
         with a blank line between them, while each group keeps single
         line breaks internally.
         """
@@ -168,10 +171,10 @@ class PostTextBuilder:
             if situation_phrase
             else f"#{team_abbrev} goal!"
         )
-        header = [
-            headline,
-            f"🏒⚫ {scorer_name} ({scorer_season_goals})",
-        ]
+        scorer_line = f"🏒⚫ {scorer_name}"
+        if scorer_season_goals is not None:
+            scorer_line += f" ({scorer_season_goals})"
+        header = [headline, scorer_line]
 
         assist_players = [a for a in assists if a is not None][:2]
         if assist_players:
@@ -198,6 +201,7 @@ class PostTextBuilder:
     def build_period_end_text(
         *,
         period_number: int | None,
+        period_type: str | None = None,
         home_tri: str | None,
         home_score: int | None,
         away_tri: str | None,
@@ -246,12 +250,17 @@ class PostTextBuilder:
         trigger layer sport-generic: hockey fills them with the defaults
         ("period", 3), basketball would pass ``unit_word="quarter"``,
         ``regulation_periods=4``. Past regulation the header collapses
-        to "End of overtime." either way (the shootout, hockey's period
-        5, lands there too). A missing period number renders
-        "End of period.".
+        to "End of overtime."; hockey's shootout (``period_type="SO"``,
+        period 5) gets its own "End of shootout." instead, and a final
+        header from a shootout-decided game is tagged ``(SO)``. A
+        missing period number renders "End of period.".
         """
         if period_number is None:
             header = f"End of {unit_word}."
+        elif period_type == "SO":
+            # Hockey's shootout: period 5 on the clock, but neither an
+            # ordinal period nor overtime — the feed marks it "SO".
+            header = "End of shootout."
         elif period_number > regulation_periods:
             header = "End of overtime."
         else:
@@ -268,6 +277,10 @@ class PostTextBuilder:
                 if tracked_score > opponent_score
                 else f"Final: #{team_abbrev} Lose"
             )
+            if period_type == "SO":
+                # The one-goal header score can't distinguish a shootout
+                # win from any other one-goal win — say it explicitly.
+                header += " (SO)"
 
         scoreboard = PostTextBuilder.scoreboard_lines(
             period_number=period_number,

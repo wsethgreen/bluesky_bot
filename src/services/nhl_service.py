@@ -95,14 +95,37 @@ class NhlService:
             return next((g for g in schedule_day.games if g.involves(team)), None)
         return None
 
+    @staticmethod
+    def is_shootout_play(play: NhlPlay) -> bool:
+        """Whether a play took place in the shootout (period type ``SO``).
+
+        The feed runs the shootout as period 5 with ``periodType: "SO"``
+        and tags its attempts — even the ones recorded as ``goal`` plays —
+        with that descriptor.
+        """
+        return play.period is not None and play.period.period_type == "SO"
+
+    @staticmethod
+    def is_scored_goal(play: NhlPlay) -> bool:
+        """A real (regulation/overtime) goal, never a shootout attempt.
+
+        Shootout attempts carry ``typeDescKey == "goal"`` too, but they
+        don't change the score, don't count toward player totals, and
+        their ``situationCode`` (one shooter, no five-a-side setup)
+        misparses as a 1-on-0 "power play" — so every goal-scoring path
+        drops them here.
+        """
+        return play.type_desc_key == "goal" and not NhlService.is_shootout_play(play)
+
     async def get_goals_for_game(self, game_id: int) -> list[NhlPlay]:
-        """Goal plays for a game, in sequence.
+        """Real goal plays for a game, in sequence (no shootout attempts).
 
         Fetches all plays via :meth:`NhlClient.get_plays` and keeps only
-        ``typeDescKey == "goal"`` events.
+        ``typeDescKey == "goal"`` events outside the shootout — see
+        :meth:`is_scored_goal`.
         """
         plays = await self.client.get_plays(game_id)
-        return [p for p in plays if p.type_desc_key == "goal"]
+        return [p for p in plays if self.is_scored_goal(p)]
 
     async def get_live_snapshot(self, game_id: int, team_id: int) -> NhlLiveSnapshot:
         """One play-by-play fetch: state, our goals, period ends, scoreboard.
@@ -117,13 +140,16 @@ class NhlService:
         needed.
 
         Each penalty's resulting strength is read from the next
-        faceoff after the call (see :meth:`_penalties`).
+        faceoff after the call (see :meth:`_penalties`). Shootout
+        attempts are not goals — :meth:`is_scored_goal` drops them —
+        while the shootout's ``period-end`` play stays in
+        ``period_ends`` so the final post can claim it.
         """
         pbp = await self.client.get_play_by_play(game_id)
         goals = [
             p
             for p in pbp.plays
-            if p.type_desc_key == "goal"
+            if self.is_scored_goal(p)
             and p.details is not None
             and p.details.event_owner_team_id == team_id
         ]

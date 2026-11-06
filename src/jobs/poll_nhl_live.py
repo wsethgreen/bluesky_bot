@@ -241,7 +241,14 @@ class PollWorker:
             home_tri=game.home_team.abbrev if game.home_team else None,
             away_tri=game.away_team.abbrev if game.away_team else None,
         )
-        await self._apply_live_state(games, game.id, snap.game_state, snap.goals)
+        await self._apply_live_state(
+            games,
+            game.id,
+            snap.game_state,
+            snap.goals,
+            home_score=snap.home.score,
+            away_score=snap.away.score,
+        )
         await session.commit()
 
         away = game.away_team.abbrev if game.away_team else "?"
@@ -322,7 +329,13 @@ class PollWorker:
             home_tri=home.tri_code,
             away_tri=away.tri_code,
         )
-        self._apply_row_state(row, snap.game_state, snap.goals)
+        self._apply_row_state(
+            row,
+            snap.game_state,
+            snap.goals,
+            home_score=snap.home.score,
+            away_score=snap.away.score,
+        )
         await session.commit()
 
         summary = (
@@ -413,15 +426,17 @@ class PollWorker:
         plays_by_event = {p.event_id: p for p in plays if p.event_id is not None}
         new_text_posts = 0
         for goal in goals:
+            play = plays_by_event.get(goal.event_id)
             text = await self._build_goal_text(
                 players,
                 goal,
                 situation_phrase=self._goal_situation_phrase(
-                    plays_by_event.get(goal.event_id),
+                    play,
                     tracked_team_id=tracked_team_id,
                     home_id=home_id,
                     away_id=away_id,
                 ),
+                is_shootout=play is not None and self._nhl.is_shootout_play(play),
                 home_tri=home_tri,
                 away_tri=away_tri,
                 home_shots=home_shots,
@@ -480,7 +495,8 @@ class PollWorker:
         The game-deciding period-end — the payload's *last* period-end
         while the state is terminal — swaps its header for the result:
         "Final: #CBJ Win! 💥" or "Final: #CBJ Lose" from the final
-        score. Only that last play gets it: a backfill after the bot
+        score, tagged "(SO)" when a shootout decided it. Only that last
+        play gets it: a backfill after the bot
         missed the game still posts plain "End of N period." headers
         for the earlier periods, and a mid-game payload (state not
         terminal) never claims a result. If the poll catches the final
@@ -507,6 +523,7 @@ class PollWorker:
                 continue  # no dedup key → would re-queue every poll
             text = PostTextBuilder.build_period_end_text(
                 period_number=play.period.number if play.period else None,
+                period_type=play.period.period_type if play.period else None,
                 home_tri=snap.home.abbrev,
                 home_score=snap.home.score,
                 away_tri=snap.away.abbrev,
@@ -652,6 +669,7 @@ class PollWorker:
         goal,
         *,
         situation_phrase: str | None = None,
+        is_shootout: bool = False,
         home_tri: str | None = None,
         away_tri: str | None = None,
         home_shots: int | None = None,
@@ -661,17 +679,24 @@ class PollWorker:
 
         ``situation_phrase`` (from :meth:`_goal_situation_phrase`) is the
         headline label — "power play" / "short handed" / "empty net" — and
-        ``None`` leaves the plain "goal!" headline.
+        ``None`` leaves the plain "goal!" headline. ``is_shootout`` drops
+        the scorer's season total (a shootout attempt has no official
+        count).
         """
         if goal is None:
             return None
 
         scorer = None
-        scorer_season_goals = 0
+        scorer_season_goals: int | None = 0
         if goal.scoring_player_id is not None:
             scorer = await players.get_player(goal.scoring_player_id)
             if scorer is not None:
                 scorer_season_goals = scorer.goals
+        if is_shootout:
+            # A shootout attempt has no official season total (and the
+            # local stat bump never ran for one) — show the name alone
+            # rather than a number that isn't real.
+            scorer_season_goals = None
 
         assist_players: list = []
         for pid in (goal.assist1_player_id, goal.assist2_player_id):
@@ -850,29 +875,56 @@ class PollWorker:
         game_id: int,
         state: str | None,
         goals: list[NhlPlay],
+        *,
+        home_score: int | None = None,
+        away_score: int | None = None,
     ) -> None:
         """Refresh a just-discovered row with live state/scores."""
         row = await games.get_game(game_id)
         if row is None:
             return
-        self._apply_row_state(row, state, goals)
+        self._apply_row_state(
+            row, state, goals, home_score=home_score, away_score=away_score
+        )
 
     @staticmethod
-    def _apply_row_state(row: Game, state: str | None, goals: list[NhlPlay]) -> None:
-        """Mutate a managed row in place (caller commits)."""
+    def _apply_row_state(
+        row: Game,
+        state: str | None,
+        goals: list[NhlPlay],
+        *,
+        home_score: int | None = None,
+        away_score: int | None = None,
+    ) -> None:
+        """Mutate a managed row in place (caller commits).
+
+        ``home_score``/``away_score`` are the play-by-play header's
+        official counts — both sides' goals plus the shootout
+        adjustment — and win whenever present. The last goal play's
+        ``details`` scores are only a fallback for header-less
+        payloads: they carry the tracked team's goals alone, so an
+        opponent goal after the last tracked goal (2026-10-18 stored
+        1-1 instead of 1-2) or a shootout (details frozen at 1-1 while
+        the header reads 2-1) would store the wrong final without the
+        header taking precedence.
+        """
         if state:
             row.game_state = state
         if row.game_state in TERMINAL_STATES and row.ended_at is None:
             # First sighting of the terminal state: start the grace
             # window during which late highlight clips are still polled.
             row.ended_at = datetime.now(UTC)
-        if goals:
-            details = goals[-1].details
+        if home_score is None or away_score is None:
+            details = goals[-1].details if goals else None
             if details is not None:
-                if details.away_score is not None:
-                    row.away_team_score = details.away_score
-                if details.home_score is not None:
-                    row.home_team_score = details.home_score
+                if away_score is None:
+                    away_score = details.away_score
+                if home_score is None:
+                    home_score = details.home_score
+        if away_score is not None:
+            row.away_team_score = away_score
+        if home_score is not None:
+            row.home_team_score = home_score
 
     def _brightcove_video_url(self, clip_id: int) -> str | None:
         """Construct the Brightcove playback API URL for a clip.
