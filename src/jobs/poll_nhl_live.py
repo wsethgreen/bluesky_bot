@@ -40,7 +40,7 @@ from repos.goals_repo import GoalsRepo
 from repos.players_repo import PlayersRepo
 from repos.posts_repo import PostsRepo
 from repos.teams_repo import TeamsRepo
-from services.nhl_service import NhlService, is_shootout_play
+from services.nhl_service import NhlService
 from services.post_text import PostTextBuilder
 
 if TYPE_CHECKING:
@@ -436,7 +436,7 @@ class PollWorker:
                     home_id=home_id,
                     away_id=away_id,
                 ),
-                is_shootout=play is not None and is_shootout_play(play),
+                is_shootout=play is not None and self._nhl.is_shootout_play(play),
                 home_tri=home_tri,
                 away_tri=away_tri,
                 home_shots=home_shots,

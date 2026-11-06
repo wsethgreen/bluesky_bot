@@ -10,7 +10,7 @@ import asyncio
 
 from models.nhl import NhlPlay, NhlPlayByPlay
 from services.nhl_game_translator import NhlGameTranslator
-from services.nhl_service import NhlService, is_scored_goal, is_shootout_play
+from services.nhl_service import NhlService
 
 # Structurally faithful excerpt of gamecenter 2026020258's payload:
 # one regulation CBJ goal, one shootout attempt recorded as a goal,
@@ -86,8 +86,8 @@ class TestShootoutPredicates:
                 "typeDescKey": "goal",
             }
         )
-        assert is_shootout_play(attempt)
-        assert not is_scored_goal(attempt)
+        assert NhlService.is_shootout_play(attempt)
+        assert not NhlService.is_scored_goal(attempt)
 
     def test_regulation_goal_is_scored(self) -> None:
         goal = play(
@@ -97,13 +97,13 @@ class TestShootoutPredicates:
                 "typeDescKey": "goal",
             }
         )
-        assert not is_shootout_play(goal)
-        assert is_scored_goal(goal)
+        assert not NhlService.is_shootout_play(goal)
+        assert NhlService.is_scored_goal(goal)
 
     def test_missing_period_is_not_treated_as_shootout(self) -> None:
         goal = play({"eventId": 1, "typeDescKey": "goal"})
-        assert not is_shootout_play(goal)
-        assert is_scored_goal(goal)
+        assert not NhlService.is_shootout_play(goal)
+        assert NhlService.is_scored_goal(goal)
 
     def test_non_goal_play_is_never_a_scored_goal(self) -> None:
         period_end = play(
@@ -113,7 +113,7 @@ class TestShootoutPredicates:
                 "typeDescKey": "period-end",
             }
         )
-        assert not is_scored_goal(period_end)
+        assert not NhlService.is_scored_goal(period_end)
 
 
 class TestSnapshotExcludesShootout:
