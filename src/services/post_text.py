@@ -1,10 +1,12 @@
 """Bluesky post text formatting: goal posts, period-end scoreboards,
-penalty posts, and highlight-video captions.
+penalty posts, quarter-end scoreboards, and highlight-video captions.
 
 Pure formatting — no DB, no API clients — so the poll worker can stay
 focused on discovery/persistence and the layout can be tweaked (or
 unit-tested) in one place.
 """
+
+from collections.abc import Mapping
 
 
 def _ordinal(number: int) -> str:
@@ -293,6 +295,90 @@ class PostTextBuilder:
             show_clock=False,
         )
         return "\n\n".join([header, "\n".join(scoreboard)])
+
+    @staticmethod
+    def build_quarter_end_text(
+        *,
+        period_number: int | None,
+        home_tri: str | None,
+        home_score: int | None,
+        away_tri: str | None,
+        away_score: int | None,
+        home_leaders: Mapping[str, str | None] | None = None,
+        away_leaders: Mapping[str, str | None] | None = None,
+    ) -> str:
+        """Build the Bluesky post text for the end of a basketball quarter.
+
+        Format:
+
+            End of 1st quarter.
+
+            CLE: 119        | PHI: 95
+            PTS: Mitchell 23 | Brown 20
+            REB: Hezonja 10  | James 7
+            AST: Mitchell 8  | Brown 5
+
+        The header follows :meth:`build_period_end_text`'s rules with
+        basketball's regulation length: a missing number renders "End
+        of quarter." and any period past the 4th is "End of overtime."
+        — ``_ordinal`` already renders "4th" correctly (hockey's
+        ``period_label`` is the helper that collapses 4+ to OT).
+
+        No dashed rules, unlike hockey's :meth:`scoreboard_lines`:
+        four content rows wrapped in a rule each ran ~370 characters,
+        over Bluesky's 300-character cap, and even a single block rule
+        left too little headroom for long player names. Plain rows
+        instead; the pipes still stack because labels are uniformly
+        three characters (tri-codes and PTS/REB/AST) and each side's
+        values pad to that side's widest cell, all in one width scope.
+        Like hockey's "SOG:" row, only the score row labels its right
+        side — the category label already speaks for the leader rows.
+
+        ``home_leaders``/``away_leaders`` map row label → cell (e.g.
+        ``{"PTS": "Mitchell 23", ...}``, built by
+        ``jobs.poll_nba_live.leader_cells``); a ``None`` cell renders
+        "-", and when no side has any leader data the leader rows drop
+        out entirely, leaving the plain score board.
+        """
+        if period_number is None:
+            header = "End of quarter."
+        elif period_number > 4:
+            header = "End of overtime."
+        else:
+            header = f"End of {_ordinal(period_number)} quarter."
+
+        # (left label, left value, right label | None, right value);
+        # the score row names both sides, leader rows label only left.
+        rows: list[tuple[str, str, str | None, str]] = [
+            (
+                home_tri or "?",
+                "-" if home_score is None else str(home_score),
+                away_tri or "?",
+                "-" if away_score is None else str(away_score),
+            )
+        ]
+        home_cells = dict(home_leaders or {})
+        away_cells = dict(away_leaders or {})
+        labels = list(home_cells)
+        labels += [label for label in away_cells if label not in home_cells]
+        if labels and any(home_cells.get(k) or away_cells.get(k) for k in labels):
+            for label in labels:
+                rows.append(
+                    (
+                        label,
+                        home_cells.get(label) or "-",
+                        None,
+                        away_cells.get(label) or "-",
+                    )
+                )
+
+        left_width = max(len(left_value) for _, left_value, _, _ in rows)
+        rendered: list[str] = []
+        for left_label, left_value, right_label, right_value in rows:
+            left = f"{left_label}: {left_value:<{left_width}}"
+            right = f"{right_label}: {right_value}" if right_label else right_value
+            rendered.append(f"{left} | {right}")
+        return "\n\n".join([header, "\n".join(rendered)])
 
     @staticmethod
     def build_penalty_post_text(

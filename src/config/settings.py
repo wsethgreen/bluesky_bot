@@ -1,13 +1,18 @@
 """Application settings loaded from environment / .env file.
 
 Config is grouped by concern — ``settings.nhl.*``, ``settings.nba.*``,
-``settings.poller.*``, ``settings.poster.*`` — instead of one flat
+``settings.poller.*``, ``settings.poster.*``, ``settings.cbj.*``,
+``settings.cavs.*`` — instead of one flat
 class. Each group is its own ``BaseSettings`` that reads the same
 ``.env`` file under an ``env_prefix`` matching the flat keys already in
 use (``NHL_TEAM_ABBREVIATION``, ``POLL_INTERVAL_MINUTES``, ...), so the
 grouping is Python-side only and no environment variable is renamed.
 
-Shared concerns (Bluesky, Brightcove, HTTP tuning, DB, app) stay on the
+Each Bluesky bot account is its own group too — ``settings.cbj.*`` and
+``settings.cavs.*`` read ``CBJ_BLUESKY_*`` / ``CAVS_BLUESKY_*`` — so the
+NHL and NBA bots post from separate accounts.
+
+Shared concerns (Brightcove, HTTP tuning, DB, app) stay on the
 top-level :class:`Settings`, as does ``final_grace_minutes`` (a poll
 tuning knob but kept top-level alongside the other scheduler knobs).
 """
@@ -49,10 +54,15 @@ class NhlSettings(BaseSettings):
 
 
 class NbaSettings(BaseSettings):
-    """NBA content API (env keys: ``NBA_*``).
+    """NBA APIs and the team to follow (env keys: ``NBA_*``).
 
-    Used by ``clients/nba_content_client.py`` (team-site videos; no job
-    wired up yet).
+    ``content_base_url``/``team_id`` feed
+    ``clients/nba_content_client.py`` (team-site highlight videos);
+    ``site_api_base_url``/``team_abbreviation`` feed
+    ``clients/nba_live_client.py`` — the scoreboard (game state) and
+    the per-game summary (quarter scores + team leaders for
+    end-of-quarter posts), which the ``nba_live_poller`` job runs on
+    ``poll_interval_minutes``.
     """
 
     model_config = _group_config("nba_")
@@ -65,6 +75,19 @@ class NbaSettings(BaseSettings):
         default=1610612739,
         description="NBA team ID to follow, e.g. 1610612739 (Cavaliers)",
     )
+    site_api_base_url: str = Field(
+        default="https://site.api.espn.com",
+        description="ESPN site API base URL (NBA scoreboard / game state)",
+    )
+    team_abbreviation: str = Field(
+        default="CLE",
+        description="Team to follow, e.g. CLE",
+    )
+    poll_interval_minutes: int = Field(
+        default=1,
+        ge=1,
+        description="NBA poller interval in minutes",
+    )
 
 
 class PollerSettings(BaseSettings):
@@ -72,7 +95,7 @@ class PollerSettings(BaseSettings):
 
     model_config = _group_config("poll_")
 
-    interval_minutes: int = Field(default=5, ge=1)
+    interval_minutes: int = Field(default=1, ge=1)
 
 
 class PosterSettings(BaseSettings):
@@ -93,6 +116,32 @@ class PosterSettings(BaseSettings):
     )
 
 
+class BlueskyAccountSettings(BaseSettings):
+    """Credentials for one team's Bluesky bot account.
+
+    Not instantiated directly — concrete subclasses set ``env_prefix``
+    so the same field names read ``CBJ_BLUESKY_*`` / ``CAVS_BLUESKY_*``
+    (see :func:`_group_config` on why config is per-class).
+    """
+
+    bluesky_handle: str = Field(description="Bluesky handle, e.g. user.bsky.social")
+    bluesky_app_password: SecretStr = Field(
+        default=SecretStr(""), description="Bluesky app password"
+    )
+
+
+class CbjBlueskySettings(BlueskyAccountSettings):
+    """Blue Jackets (NHL) bot account (env keys: ``CBJ_BLUESKY_*``)."""
+
+    model_config = _group_config("cbj_")
+
+
+class CavsBlueskySettings(BlueskyAccountSettings):
+    """Cavaliers (NBA) bot account (env keys: ``CAVS_BLUESKY_*``)."""
+
+    model_config = _group_config("cavs_")
+
+
 class Settings(BaseSettings):
     """Single source of truth for config. Values come from env vars or .env."""
 
@@ -109,11 +158,9 @@ class Settings(BaseSettings):
     poller: PollerSettings = Field(default_factory=PollerSettings)
     poster: PosterSettings = Field(default_factory=PosterSettings)
 
-    # Bluesky
-    bluesky_handle: str = Field(description="Bluesky handle, e.g. user.bsky.social")
-    bluesky_app_password: SecretStr = Field(
-        default=SecretStr(""), description="Brightcove playback policy key"
-    )
+    # Bluesky (one account per league bot; see BlueskyAccountSettings)
+    cbj: CbjBlueskySettings = Field(default_factory=CbjBlueskySettings)
+    cavs: CavsBlueskySettings = Field(default_factory=CavsBlueskySettings)
 
     # Brightcove
     brightcove_account_id: str = Field(description="Brightcove account ID")
@@ -143,11 +190,11 @@ class Settings(BaseSettings):
     # App
     log_level: str = Field(default="INFO")
     env: str = Field(
-        default="dev",
+        default="local",
         description=(
-            "Deployment env; 'local' makes the poster log what would be "
-            "posted (text or caption + highlight URL) instead of calling "
-            "Bluesky"
+            "Deployment env; 'local' (the safe default) makes the poster "
+            "log what would be posted (text or caption + highlight URL) "
+            "instead of calling Bluesky — prod sets 'prod' explicitly"
         ),
     )
     run_workers: bool = Field(

@@ -11,6 +11,9 @@ Video rows resolve a direct MP4 URL for the owning game's league
 (``_resolver_for``: Brightcove for the NHL, more leagues as they are
 added), download it, and post it with the short caption — quoting the
 goal's text post when that post is already up, standalone otherwise.
+Every row publishes from its league's own Bluesky account
+(``_account_for``: the CBJ account for the NHL, the Cavs account for
+the NBA), so the two bots never cross-post.
 Rows are claimed oldest-first and a goal's text row always precedes its
 video row, so the quote is normally available by the time the video
 posts. Any failure leaves the row unposted so it is retried on the next
@@ -38,6 +41,7 @@ from models.enum import PostKind
 from repos.posts_repo import MAX_ATTEMPTS, PostsRepo
 
 if TYPE_CHECKING:
+    from config.settings import BlueskyAccountSettings, Settings
     from db.models.post import Post
     from jobs.base import WorkerContext
 
@@ -115,7 +119,11 @@ async def post_pending(ctx: WorkerContext, *, force: bool = False) -> str:
                 logger.info("local env: would post %s: %s", label, detail)
                 return f"{label}: local env, logged only ({detail})"
 
-            bsky = BlueskyClient()
+            creds = _account_for(ctx.settings, game.league)
+            bsky = BlueskyClient(
+                account_handle=creds.bluesky_handle,
+                account_password=creds.bluesky_app_password.get_secret_value(),
+            )
 
             if post.kind == PostKind.VIDEO:
                 quote = await _quoted_text_ref(posts, post)
@@ -211,6 +219,29 @@ async def _nhl_mp4_url(ctx: WorkerContext, post: Post) -> str | None:
 
 
 _VIDEO_RESOLVERS: dict[str, VideoResolver] = {"nhl": _nhl_mp4_url}
+
+
+def _account_for(settings: Settings, league: str) -> BlueskyAccountSettings:
+    """Credentials group for a game's league; an unknown league fails loudly.
+
+    Posting an NHL row from the Cavs account (or vice versa) is the
+    mix-up this exists to prevent, so — like ``_resolver_for`` — an
+    unregistered league raises instead of falling back to a default
+    account. New leagues register in the local mapping below, pairing
+    the league with its Settings account group (``settings.cbj`` for
+    the CBJ/NHL bot, ``settings.cavs`` for the Cavs/NBA bot).
+    """
+    groups: dict[str, BlueskyAccountSettings] = {
+        "nhl": settings.cbj,
+        "nba": settings.cavs,
+    }
+    try:
+        return groups[league]
+    except KeyError:
+        raise ValueError(
+            f"no Bluesky account for league {league!r} "
+            f"(known: {', '.join(sorted(groups))})"
+        ) from None
 
 
 def _resolver_for(league: str) -> VideoResolver:

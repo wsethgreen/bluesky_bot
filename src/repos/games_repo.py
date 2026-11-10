@@ -34,12 +34,18 @@ class GamesRepo:
         self,
         day: str | dt.date,
         team_abbrev: str,
+        *,
+        league: str,
         tz: str = "America/Toronto",
     ) -> Game | None:
         """The team's game on a calendar day in ``tz`` (defaults to app tz).
 
         Bounds ``start_time`` to the local day instead of truncating the
         timestamp in the DB, so late-UTC games land on the correct local date.
+
+        ``league`` scopes the match: tri-codes repeat across leagues
+        (both Boston teams are ``BOS``), so without it the other
+        league's game could come back as the tracked team's.
         """
         day_iso = normalize_date(day)
         day_start = dt.datetime.combine(
@@ -52,6 +58,7 @@ class GamesRepo:
                 Game.start_time >= day_start,
                 Game.start_time < day_start + dt.timedelta(days=1),
             )
+            .where(Game.league == league)
             .where(
                 or_(
                     Game.away_team.has(Team.tri_code == team),

@@ -1,15 +1,21 @@
-"""Tests for post_pending's pure helpers: video-resolver dispatch and
-the posting-window check.
+"""Tests for post_pending's pure helpers: video-resolver dispatch,
+Bluesky credential dispatch, and the posting-window check.
 
 Both are deliberately sync so they can be tested without the
 async/DB/network machinery around ``post_pending`` itself.
 """
 
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
-from jobs.post_pending import _nhl_mp4_url, _resolver_for, _window_skip_reason
+from jobs.post_pending import (
+    _account_for,
+    _nhl_mp4_url,
+    _resolver_for,
+    _window_skip_reason,
+)
 
 
 class TestVideoResolverDispatch:
@@ -31,6 +37,33 @@ class TestVideoResolverDispatch:
     def test_error_names_the_known_leagues(self) -> None:
         with pytest.raises(ValueError, match=r"known: nhl"):
             _resolver_for("nfl")
+
+
+class TestLeagueAccountDispatch:
+    # Only group identity matters here; the stub stands in for Settings.
+    settings = SimpleNamespace(cbj=object(), cavs=object())
+
+    def test_nhl_uses_cbj_credentials(self) -> None:
+        assert _account_for(self.settings, "nhl") is self.settings.cbj
+
+    def test_nba_uses_cavs_credentials(self) -> None:
+        assert _account_for(self.settings, "nba") is self.settings.cavs
+
+    def test_unknown_league_fails_loudly(self) -> None:
+        # No default account: posting to the wrong bot is the exact
+        # mix-up this mapping exists to prevent.
+        with pytest.raises(ValueError, match="no Bluesky account for league 'nfl'"):
+            _account_for(self.settings, "nfl")
+
+    def test_lookup_is_exact_no_silent_normalization(self) -> None:
+        # Pollers store leagues lowercase; a differently cased value
+        # must raise, not quietly post from some account.
+        with pytest.raises(ValueError, match="no Bluesky account"):
+            _account_for(self.settings, "NHL")
+
+    def test_error_names_the_known_leagues(self) -> None:
+        with pytest.raises(ValueError, match=r"known: nba, nhl"):
+            _account_for(self.settings, "mlb")
 
 
 class TestWindowSkipReason:

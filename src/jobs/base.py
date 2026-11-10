@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from config.settings import Settings
 from repos.job_runs_repo import JobRunsRepo
+from services.nba_service import NbaService
 from services.nhl_service import NhlService
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,7 @@ class WorkerContext:
 
     settings: Settings
     nhl: NhlService
+    nba: NbaService
     sessions: async_sessionmaker[AsyncSession]
 
 
