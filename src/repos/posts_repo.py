@@ -62,6 +62,22 @@ class PostsRepo:
         )
         return result.rowcount == 1
 
+    async def existing_event_ids(self, game_id: int, kind: PostKind) -> set[int]:
+        """Event ids already queued for (game, kind) — the dedup check.
+
+        Lets a caller skip expensive enrichment (an NBA boxscore fetch,
+        say) when every post it would claim already exists, instead of
+        discovering that only after the insert conflict.
+        """
+        result = await self.session.execute(
+            select(Post.event_id).where(
+                Post.game_id == game_id,
+                Post.kind == kind,
+                Post.event_id.is_not(None),
+            )
+        )
+        return {event_id for (event_id,) in result}
+
     async def get_post(self, post_id: int) -> Post | None:
         return await self.session.get(Post, post_id)
 

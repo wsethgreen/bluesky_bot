@@ -8,10 +8,12 @@ class PostKind(StrEnum):
 
     Each goal produces up to two rows: a ``text`` row claimed the moment
     the goal is detected, and a ``video`` row claimed once the NHL
-    attaches the highlight clip id. A period-end play produces one
+    attaches the highlight clip id. A period-end produces one
     ``period_end`` row: the "End of N period." scoreboard post, with
     the game-deciding one carrying the "Final: #CBJ Win!"/"Lose"
-    result header instead. A ``penalty`` play produces one ``penalty``
+    result header instead — the NHL claims it per period-end play, the
+    NBA per completed quarter (``event_id`` = the quarter number). A
+    ``penalty`` play produces one ``penalty``
     row: infraction, the tracked team's resulting strength (power play
     / penalty kill / 4 on 4), and a scoreboard.
 

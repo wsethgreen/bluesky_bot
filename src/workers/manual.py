@@ -11,6 +11,7 @@ Run inside the compose network (scheduler container has DB access):
     docker compose exec scheduler python -m workers.manual poll --force
     docker compose exec scheduler python -m workers.manual poll --date 2026-10-24 --force
     docker compose exec scheduler python -m workers.manual poll-nba --force
+    docker compose exec scheduler python -m workers.manual poll-nba --date 2026-11-09 --force
     docker compose exec scheduler python -m workers.manual post --force
     docker compose exec scheduler python -m workers.manual post --dry-run
 
@@ -19,9 +20,12 @@ followed by the pending posts — the quickest way to answer "are the
 workers alive and what did they last do?".
 
 ``poll --date YYYY-MM-DD --force`` re-polls a *previous* day's stored
-game (``poll --force`` only reaches today's game), which is how a
+game (plain ``--force`` only reaches today's game), which is how a
 missed highlight clip is backfilled once its date has passed; the
 matching ``post --force`` then publishes it outside the posting window.
+``poll-nba --date`` works the same way for the NBA poller (ESPN's
+scoreboard serves past dates too): it's how a game that ended while the
+scheduler was down gets its FINAL state and remaining quarter posts.
 
 ``--dry-run`` for ``post`` claims nothing and posts nothing; it only
 prints the oldest pending posts (goal text + highlight video rows).
@@ -69,10 +73,9 @@ async def _poll(force: bool, day: str | None) -> None:
         await engine.dispose()
 
 
-async def _poll_nba(force: bool) -> None:
-    # No --date backfill: ESPN serves today's scoreboard only, so there
-    # is no previous day's game to re-poll (the NHL poller's --date has
-    # no NBA equivalent).
+async def _poll_nba(force: bool, day: str | None) -> None:
+    # ``day`` backfills a previous day's stored game (ESPN's scoreboard
+    # serves past dates), mirroring the NHL poller's ``--date``.
     settings = get_settings()
     nba = NbaService()
     worker = NbaPollWorker(
@@ -81,7 +84,7 @@ async def _poll_nba(force: bool) -> None:
         team_abbreviation=settings.nba.team_abbreviation,
     )
     try:
-        summary = await worker.poll_once(force=force)
+        summary = await worker.poll_once(force=force, day=day)
         print(f"poll-nba: {summary}")
     finally:
         await nba.client.http.aclose()
@@ -167,8 +170,8 @@ def main() -> None:
         "--date",
         default=None,
         metavar="YYYY-MM-DD",
-        help="(poll only) re-poll that date's stored game instead of "
-        "today's — pair with --force to backfill a finished game",
+        help="(poll / poll-nba only) re-poll that date's stored game "
+        "instead of today's — pair with --force to backfill a finished game",
     )
     parser.add_argument(
         "--dry-run",
@@ -177,8 +180,8 @@ def main() -> None:
     )
     args = parser.parse_args()
     if args.date is not None:
-        if args.action != "poll":
-            parser.error("--date only applies to the poll action")
+        if args.action not in ("poll", "poll-nba"):
+            parser.error("--date only applies to the poll actions")
         try:
             normalize_date(args.date)
         except ValueError as exc:
@@ -187,7 +190,7 @@ def main() -> None:
     if args.action == "poll":
         asyncio.run(_poll(force=args.force, day=args.date))
     elif args.action == "poll-nba":
-        asyncio.run(_poll_nba(force=args.force))
+        asyncio.run(_poll_nba(force=args.force, day=args.date))
     elif args.action == "post":
         asyncio.run(_post(force=args.force, dry_run=args.dry_run))
     else:

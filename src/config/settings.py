@@ -59,8 +59,10 @@ class NbaSettings(BaseSettings):
     ``content_base_url``/``team_id`` feed
     ``clients/nba_content_client.py`` (team-site highlight videos);
     ``site_api_base_url``/``team_abbreviation`` feed
-    ``clients/nba_live_client.py`` (scoreboard → game state), which the
-    ``nba_live_poller`` job runs on ``poll_interval_minutes``.
+    ``clients/nba_live_client.py`` — the scoreboard (game state) and
+    the per-game summary (quarter scores + team leaders for
+    end-of-quarter posts), which the ``nba_live_poller`` job runs on
+    ``poll_interval_minutes``.
     """
 
     model_config = _group_config("nba_")
@@ -82,7 +84,7 @@ class NbaSettings(BaseSettings):
         description="Team to follow, e.g. CLE",
     )
     poll_interval_minutes: int = Field(
-        default=10,
+        default=1,
         ge=1,
         description="NBA poller interval in minutes",
     )
@@ -93,7 +95,7 @@ class PollerSettings(BaseSettings):
 
     model_config = _group_config("poll_")
 
-    interval_minutes: int = Field(default=5, ge=1)
+    interval_minutes: int = Field(default=1, ge=1)
 
 
 class PosterSettings(BaseSettings):
@@ -188,11 +190,11 @@ class Settings(BaseSettings):
     # App
     log_level: str = Field(default="INFO")
     env: str = Field(
-        default="dev",
+        default="local",
         description=(
-            "Deployment env; 'local' makes the poster log what would be "
-            "posted (text or caption + highlight URL) instead of calling "
-            "Bluesky"
+            "Deployment env; 'local' (the safe default) makes the poster "
+            "log what would be posted (text or caption + highlight URL) "
+            "instead of calling Bluesky — prod sets 'prod' explicitly"
         ),
     )
     run_workers: bool = Field(

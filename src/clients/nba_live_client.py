@@ -5,6 +5,7 @@ from __future__ import annotations
 from clients.http_client import BROWSER_USER_AGENT, HttpClient
 from config.settings import get_settings
 from models.nba_live import NbaScoreboardResponse
+from models.nba_summary import NbaSummaryResponse
 from utils.date import normalize_date
 
 
@@ -50,3 +51,16 @@ class NbaLiveClient:
             params={"dates": day_iso.replace("-", "")},
         )
         return NbaScoreboardResponse.model_validate(resp.json())
+
+    async def get_summary(self, event_id: int) -> NbaSummaryResponse:
+        """The game summary for ``event_id``: quarter scores + team leaders.
+
+        The end-of-quarter post's data source — per-quarter linescores
+        (score at each buzzer) and ESPN's per-team PTS/REB/AST leaders.
+        Same host and browser-UA client as the scoreboard.
+        """
+        resp = await self.http.get(
+            f"{self.base_url}/apis/site/v2/sports/basketball/nba/summary",
+            params={"event": str(event_id)},
+        )
+        return NbaSummaryResponse.model_validate(resp.json())

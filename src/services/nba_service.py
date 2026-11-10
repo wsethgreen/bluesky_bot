@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 from clients.nba_live_client import NbaLiveClient
 from config.settings import get_settings
 from models.nba_live import NbaScheduleGame, NbaScoreboardResponse
+from models.nba_summary import NbaSummaryResponse
 from utils.date import normalize_date
 
 
@@ -59,3 +60,7 @@ class NbaService:
         day = normalize_date(date) if date is not None else self.today
         scoreboard = await self.get_scoreboard(day)
         return next((g for g in scoreboard.events if g.involves(team)), None)
+
+    async def get_summary(self, event_id: int) -> NbaSummaryResponse:
+        """The game summary for ``event_id`` (quarter scores + team leaders)."""
+        return await self.client.get_summary(event_id)
