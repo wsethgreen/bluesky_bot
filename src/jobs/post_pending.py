@@ -156,10 +156,21 @@ async def post_pending(ctx: WorkerContext, *, force: bool = False) -> str:
             return f"posted {label} ({ref.uri})"
 
         except Exception as exc:
+            # Grab the PK first: rollback below expires the claimed row,
+            # and any attribute read on an expired row (``post.id``
+            # included) fires a lazy refresh that can't run here.
+            post_id = post.id
             await session.rollback()
             logger.exception("failed to post %s", label)
 
             # Record the failed attempt; give up after MAX_ATTEMPTS.
+            # Re-read the row through the session: the rollback expired
+            # the old instance, and ``await``-ing the get runs its
+            # refresh inside the greenlet (reading the stale instance's
+            # attributes directly raises MissingGreenlet).
+            post = await posts.get_post(post_id)
+            if post is None:
+                return f"{label}: post row disappeared after rollback"
             post.attempts = (post.attempts or 0) + 1
             post.last_error = f"{type(exc).__name__}: {exc}"
             if post.attempts >= MAX_ATTEMPTS:
