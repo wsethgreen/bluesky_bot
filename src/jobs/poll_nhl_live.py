@@ -455,7 +455,7 @@ class PollWorker:
                 logger.info("poll: new goal text post for event %s", goal.event_id)
 
         new_video_posts = 0
-        caption = PostTextBuilder.build_highlight_video_caption()
+        caption = PostTextBuilder.build_highlight_video_caption(self._team)
         for clip_id, event_id in clips.items():
             highlight_url = self._brightcove_video_url(clip_id)
             if await posts.claim_pending(

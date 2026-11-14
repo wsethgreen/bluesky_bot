@@ -2,9 +2,11 @@
 Bluesky credential dispatch, and the posting-window check.
 
 Both are deliberately sync so they can be tested without the
-async/DB/network machinery around ``post_pending`` itself.
+async/DB/network machinery around ``post_pending`` itself (the two
+resolver lookups are async only to match the VideoResolver signature).
 """
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -12,6 +14,7 @@ import pytest
 
 from jobs.post_pending import (
     _account_for,
+    _nba_mp4_url,
     _nhl_mp4_url,
     _resolver_for,
     _window_skip_reason,
@@ -22,11 +25,27 @@ class TestVideoResolverDispatch:
     def test_nhl_resolves_via_brightcove(self) -> None:
         assert _resolver_for("nhl") is _nhl_mp4_url
 
+    def test_nba_resolves_via_captured_feed_url(self) -> None:
+        # The poller captures the content feed's best-rendition MP4
+        # into highlight_url at claim time; the resolver just reads it.
+        assert _resolver_for("nba") is _nba_mp4_url
+
+    def test_nba_row_without_url_fails_loudly(self) -> None:
+        # A video row with no captured URL is malformed (claim always
+        # stores one) — raise so the attempt counts toward MAX_ATTEMPTS.
+        post = SimpleNamespace(highlight_url=None)
+        with pytest.raises(ValueError, match="no highlight_url"):
+            asyncio.run(_nba_mp4_url(None, post))  # type: ignore[arg-type]
+
+    def test_nba_row_returns_captured_url(self) -> None:
+        post = SimpleNamespace(highlight_url="https://cdn.nba.com/x.mp4")
+        assert asyncio.run(_nba_mp4_url(None, post)) == "https://cdn.nba.com/x.mp4"  # type: ignore[arg-type]
+
     def test_unknown_league_fails_loudly(self) -> None:
-        # No NBA resolver until the NBA poller lands; guessing (e.g.
-        # treating an NBA content id as a Brightcove id) would mis-post.
-        with pytest.raises(ValueError, match="no video resolver for league 'nba'"):
-            _resolver_for("nba")
+        # No resolver for an unregistered league; guessing (e.g.
+        # treating an unknown id as a Brightcove id) would mis-post.
+        with pytest.raises(ValueError, match="no video resolver for league 'nfl'"):
+            _resolver_for("nfl")
 
     def test_lookup_is_exact_no_silent_normalization(self) -> None:
         # Pollers store leagues lowercase ("nhl", "nba"); a differently
@@ -35,8 +54,8 @@ class TestVideoResolverDispatch:
             _resolver_for("NHL")
 
     def test_error_names_the_known_leagues(self) -> None:
-        with pytest.raises(ValueError, match=r"known: nhl"):
-            _resolver_for("nfl")
+        with pytest.raises(ValueError, match=r"known: nba, nhl"):
+            _resolver_for("mlb")
 
 
 class TestLeagueAccountDispatch:

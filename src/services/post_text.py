@@ -24,6 +24,16 @@ def _ordinal(number: int) -> str:
     return f"{number}{suffix}"
 
 
+def _article(name: str) -> str:
+    """Team name with the English article for mid-sentence use:
+    "the New York Knicks".
+
+    ESPN's ``displayName`` carries none, but don't double up if one
+    ever does arrive ("The ..." / "the ...").
+    """
+    return name if name.lower().startswith("the ") else f"the {name}"
+
+
 class PostTextBuilder:
     """Builders for the texts the poster publishes.
 
@@ -306,33 +316,75 @@ class PostTextBuilder:
         away_score: int | None,
         home_leaders: Mapping[str, str | None] | None = None,
         away_leaders: Mapping[str, str | None] | None = None,
+        is_final: bool = False,
+        tracked_full_name: str | None = None,
+        opponent_full_name: str | None = None,
+        tracked_score: int | None = None,
+        opponent_score: int | None = None,
+        campaign_tag: str | None = None,
     ) -> str:
         """Build the Bluesky post text for the end of a basketball quarter.
 
-        Format:
+        Format (mid-game, tracked team behind):
 
-            End of 1st quarter.
+            End of the 1st quarter. The Cleveland Cavaliers trail the New York Knicks by 4. #LetEmKnow
 
-            CLE: 119        | PHI: 95
-            PTS: Mitchell 23 | Brown 20
-            REB: Hezonja 10  | James 7
-            AST: Mitchell 8  | Brown 5
+            NY: 33  |  CLE: 29
 
-        The header follows :meth:`build_period_end_text`'s rules with
-        basketball's regulation length: a missing number renders "End
-        of quarter." and any period past the 4th is "End of overtime."
-        — ``_ordinal`` already renders "4th" correctly (hockey's
-        ``period_label`` is the helper that collapses 4+ to OT).
+            PTS: Brunson 27  |  Harden 32
+            REB: Towns 11  |  Allen 14
+            AST: Towns 8  |  Mitchell 6
+
+        The score row stands alone: a blank line separates it from the
+        leader rows so the final score never runs into PTS.
+
+        The header is a sentence: the end-of-quarter line, then — when
+        both teams' display names and both scores are known — the game
+        context ("The Cleveland Cavaliers lead/trail the New York
+        Knicks by N."), or the tie line when the sides are level ("The
+        Cleveland Cavaliers and the New York Knicks are tied at
+        55-55."). A missing name/score gets no sentence; the
+        end-of-quarter line stands alone.
+
+        When the game is over, the deciding quarter's header announces
+        the tracked team's result instead (the caller passes
+        ``is_final`` for that quarter only), with the same-line score
+        sentence naming the opponent when its name is known:
+
+            Cleveland Cavaliers win! The Cleveland Cavaliers defeat the New York Knicks 115-107.
+
+            Cleveland Cavaliers lose. The Cleveland Cavaliers fall to the New York Knicks 107-115.
+
+        ``tracked_full_name``/``opponent_full_name`` are the teams'
+        display names from the ESPN payload; ``tracked_score`` /
+        ``opponent_score`` pick win vs. lose. A tie or a missing
+        name/score can't claim a result, so those fall back to the
+        plain end-of-quarter header plus its header sentence (the
+        tie line, when both names are known).
+
+        The plain header follows :meth:`build_period_end_text`'s rules
+        with basketball's regulation length: a missing number renders
+        "End of quarter." and any period past the 4th is "End of
+        overtime." — ``_ordinal`` already renders "4th" correctly
+        (hockey's ``period_label`` is the helper that collapses 4+ to
+        OT). Ordinal quarters read "End of the 1st quarter." (the
+        "the" included).
+
+        ``campaign_tag`` rides the end of the header line — the
+        sentence ends with the tag ("... by 4. #LetEmKnow") — and is
+        ``None`` for non-Cavs games, which then carry no tag at all.
+        The text owns its own hashtags; the poster only facets what's
+        in it, so it renders tappable.
 
         No dashed rules, unlike hockey's :meth:`scoreboard_lines`:
         four content rows wrapped in a rule each ran ~370 characters,
         over Bluesky's 300-character cap, and even a single block rule
-        left too little headroom for long player names. Plain rows
-        instead; the pipes still stack because labels are uniformly
-        three characters (tri-codes and PTS/REB/AST) and each side's
-        values pad to that side's widest cell, all in one width scope.
-        Like hockey's "SOG:" row, only the score row labels its right
-        side — the category label already speaks for the leader rows.
+        left too little headroom for long player names. Every row is
+        ``left  |  right`` — two spaces around the pipe, no column
+        padding — which stays readable without aligning to a width
+        the player names can break. Like hockey's "SOG:" row, only the
+        score row labels its right side — the category label already
+        speaks for the leader rows.
 
         ``home_leaders``/``away_leaders`` map row label → cell (e.g.
         ``{"PTS": "Mitchell 23", ...}``, built by
@@ -340,12 +392,64 @@ class PostTextBuilder:
         "-", and when no side has any leader data the leader rows drop
         out entirely, leaving the plain score board.
         """
-        if period_number is None:
-            header = "End of quarter."
-        elif period_number > 4:
-            header = "End of overtime."
+        # Game over: the deciding quarter's header announces the
+        # tracked team's result instead ("Cleveland Cavaliers win!"),
+        # plus the same-line score sentence naming the opponent when
+        # its full name is known. A tie or a missing name/score can't
+        # claim a result, so those fall through to the plain
+        # end-of-quarter line.
+        if (
+            is_final
+            and tracked_full_name
+            and tracked_score is not None
+            and opponent_score is not None
+            and tracked_score != opponent_score
+        ):
+            won = tracked_score > opponent_score
+            header = f"{tracked_full_name} {'win!' if won else 'lose.'}"
+            if opponent_full_name:
+                clause = "defeat" if won else "fall to"
+                header += (
+                    f" The {tracked_full_name} {clause}"
+                    f" {_article(opponent_full_name)}"
+                    f" {tracked_score}-{opponent_score}."
+                )
         else:
-            header = f"End of {_ordinal(period_number)} quarter."
+            if period_number is None:
+                header = "End of quarter."
+            elif period_number > 4:
+                header = "End of overtime."
+            else:
+                header = f"End of the {_ordinal(period_number)} quarter."
+            # Context sentence: who leads and by how much — or the
+            # tie line when the sides are level. Needs both teams'
+            # full names and both scores; missing data gets no
+            # sentence at all.
+            if (
+                tracked_full_name
+                and opponent_full_name
+                and tracked_score is not None
+                and opponent_score is not None
+            ):
+                if tracked_score == opponent_score:
+                    header += (
+                        f" The {tracked_full_name} and"
+                        f" {_article(opponent_full_name)} are tied at"
+                        f" {tracked_score}-{opponent_score}."
+                    )
+                else:
+                    margin = abs(tracked_score - opponent_score)
+                    verb = "lead" if tracked_score > opponent_score else "trail"
+                    header += (
+                        f" The {tracked_full_name} {verb}"
+                        f" {_article(opponent_full_name)} by {margin}."
+                    )
+
+        # The campaign tag rides the header line, right where the
+        # sentence ends — the text owns its hashtags (the poster only
+        # facets what's there). ``None`` = not a Cavs game.
+        if campaign_tag:
+            header += f" #{campaign_tag}"
 
         # (left label, left value, right label | None, right value);
         # the score row names both sides, leader rows label only left.
@@ -372,13 +476,21 @@ class PostTextBuilder:
                     )
                 )
 
-        left_width = max(len(left_value) for _, left_value, _, _ in rows)
+        # Two spaces around the pipe, no column padding — a little
+        # breathing room reads better than rows aligned to a width
+        # long player names break anyway.
         rendered: list[str] = []
         for left_label, left_value, right_label, right_value in rows:
-            left = f"{left_label}: {left_value:<{left_width}}"
+            left = f"{left_label}: {left_value}"
             right = f"{right_label}: {right_value}" if right_label else right_value
-            rendered.append(f"{left} | {right}")
-        return "\n\n".join([header, "\n".join(rendered)])
+            rendered.append(f"{left}  |  {right}")
+        # Score row, blank line, then the leader rows (when any) — the
+        # split keeps the final score from running into PTS.
+        score_row, *leader_rows = rendered
+        parts = [header, score_row]
+        if leader_rows:
+            parts.append("\n".join(leader_rows))
+        return "\n\n".join(parts)
 
     @staticmethod
     def build_penalty_post_text(
@@ -468,11 +580,12 @@ class PostTextBuilder:
         return "\n\n".join([f"{headline}\n{detail}", "\n".join(scoreboard)])
 
     @staticmethod
-    def build_highlight_video_caption() -> str:
+    def build_highlight_video_caption(team_abbrev: str) -> str:
         """Caption for the standalone highlight video post.
 
         Deliberately minimal: the goal details live on the (quoted) text
-        post, so the video post only carries the camera emoji — the team
-        hashtag is appended by the poster.
+        post, so the video post only carries the camera emoji plus the
+        team hashtag — written into the text here, where the poster
+        facets it.
         """
-        return "🎥 "
+        return f"🎥 #{team_abbrev}"

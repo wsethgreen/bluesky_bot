@@ -5,8 +5,10 @@ from __future__ import annotations
 import datetime
 from zoneinfo import ZoneInfo
 
+from clients.nba_content_client import NbaContentClient
 from clients.nba_live_client import NbaLiveClient
 from config.settings import get_settings
+from models.nba_content import NbaContentVideo
 from models.nba_live import NbaScheduleGame, NbaScoreboardResponse
 from models.nba_summary import NbaSummaryResponse
 from utils.date import normalize_date
@@ -20,11 +22,15 @@ class NbaService:
     scoreboard day is Eastern, which matches the default app timezone
     (America/Toronto), so ``today`` and the feed's ``dates`` window
     always describe the same set of games.
+
+    Also owns :class:`NbaContentClient` (the team-site video feed), which
+    serves the pickable, DRM-free MP4 videos the bot could post.
     """
 
     def __init__(self) -> None:
         self.settings = get_settings()
         self.client = NbaLiveClient(base_url=self.settings.nba.site_api_base_url)
+        self.content = NbaContentClient()
 
     @property
     def today(self) -> str:
@@ -64,3 +70,22 @@ class NbaService:
     async def get_summary(self, event_id: int) -> NbaSummaryResponse:
         """The game summary for ``event_id`` (quarter scores + team leaders)."""
         return await self.client.get_summary(event_id)
+
+    async def get_team_videos(
+        self,
+        *,
+        count: int = 50,
+        offset: int = 0,
+        category: str | None = None,
+    ) -> list[NbaContentVideo]:
+        """One page of the configured team's site videos, newest first.
+
+        ``category`` is a taxonomy slug passed to the upstream
+        ``term-category`` filter (e.g. ``game-highlights``,
+        ``gameday``, ``media-availability``); ``None`` returns every
+        team video (highlights, pre/post-game pressers, misc).
+        """
+        page = await self.content.get_latest_videos(
+            count=count, offset=offset, term_category=category
+        )
+        return page.results.items

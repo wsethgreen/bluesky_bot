@@ -43,7 +43,7 @@ class NbaContentClient:
         team_id: int | str | None = None,
         count: int = 12,
         offset: int = 0,
-        term_category: int | None = None,
+        term_category: int | str | None = None,
     ) -> NbaContentVideoResponse:
         """One page of team videos, newest first.
 
@@ -56,8 +56,9 @@ class NbaContentClient:
             team_id: Team to fetch for; defaults to ``self.team_id``.
             count: Page size (items).
             offset: Items to skip.
-            term_category: Optional taxonomy term id to filter by
-                (e.g. 1728 = "Gameday"); None for all team videos.
+            term_category: Optional taxonomy term filter: a term id (e.g.
+                1728 = "Gameday") or a slug (e.g. ``game-highlights``);
+                None for all team videos.
 
         Raises:
             ValueError: On negative count/offset or non-positive team_id.
@@ -68,7 +69,7 @@ class NbaContentClient:
             raise ValueError(f"offset must be >= 0, got {offset!r}")
         resolved_team = int(team_id or self.team_id)
         if resolved_team <= 0:
-            raise ValueError(f"team_id must be positive, got {team_id!r}")
+            raise ValueError(f"team_id must be positive, got {resolved_team!r}")
 
         params: dict[str, Any] = {"platform": "web", "count": count, "offset": offset}
         if term_category is not None:
@@ -85,7 +86,7 @@ class NbaContentClient:
         *,
         team_id: int | str | None = None,
         count: int = 50,
-        term_category: int | None = None,
+        term_category: int | str | None = None,
         max_items: int | None = None,
     ) -> AsyncIterator[NbaContentVideo]:
         """Yield videos newest-first, paging until exhausted or ``max_items``.

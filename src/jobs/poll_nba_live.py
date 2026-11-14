@@ -1,10 +1,13 @@
 """NBA poll job: DB-first polling of the tracked team's scoreboard game.
 
 The NBA counterpart of ``poll_nhl_live``, minus the play-by-play work:
-it keeps the game/team rows fresh and queues one end-of-quarter post
-per buzzer — score plus each team's PTS/REB/AST leaders (see
-``_queue_quarter_ends``). Highlight/video posts land with the video
-pipeline.
+it keeps the game/team rows fresh, queues one end-of-quarter post per
+buzzer (score plus each team's PTS/REB/AST leaders, see
+``_queue_quarter_ends``), and — after FINAL — queues ``VIDEO`` posts for
+the team-site feed's post-game videos (game/player highlights and
+pressers, see ``_queue_post_game_videos``). The feed publishes those
+minutes to ~2 hours after the buzzer, so the video check keeps running
+inside ``nba.video_grace_minutes`` from ``ended_at``.
 
 Cost per cycle (one scoreboard call covers state *and* scores, so there
 is no separate play-by-play fetch):
@@ -13,10 +16,14 @@ is no separate play-by-play fetch):
   a new day re-checks the API to refresh it.
 - Game in DB, still mutable (FUTURE/LIVE): 1 call (scoreboard).
 - Each newly-ended quarter: +1 game-summary call (quarter scores and
-  team leaders for the post); a caught-up game pays one indexed read
-  of ``posts`` instead — already-queued quarters never re-fetch.
+  team leaders for the post); a caught-up game pays one indexed read of
+  ``posts`` instead — already-queued quarters never re-fetch.
+- Final, inside the video grace window: +1 content-feed call per cycle
+  (post-game videos), plus one indexed ``posts`` read when candidates
+  match. Outside the window: 0 calls.
 - Game settled (FINAL/POSTPONED/CANCELED): 0 calls; ``poll-nba
-  --force`` re-polls regardless (e.g. to pick up a same-day reschedule).
+  --force`` re-polls regardless (e.g. to pick up a same-day reschedule
+  or backfill videos).
 - First poll of game day (DB miss): 1 call, plus team-row upserts from
   the payload itself (no separate team lookup, unlike the NHL).
 """
@@ -24,14 +31,16 @@ is no separate play-by-play fetch):
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from db.models.game import Game
 from db.models.team import nba_team_row_id
 from models.enum import PostKind
+from models.nba_content import NbaContentVideo
 from models.nba_live import NbaCompetitor, NbaGameStatus, NbaScheduleGame, NbaSeason
 from models.nba_summary import NbaSummaryLineScore, NbaSummaryResponse, NbaTeamLeaders
 from repos.game_day_checks_repo import GameDayChecksRepo
@@ -47,6 +56,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 JOB_ID = "nba_live_poller"
+
+# The feed's game labels date the game in Eastern ("11/11/2026 CLE@NYK");
+# every NBA tip time falls on the same Eastern date as its local date
+# (latest tip 10:30 PM ET), so converting with this zone is exact.
+_NBA_ET = ZoneInfo("America/New_York")
 
 # States after which nothing in today's scoreboard can change the row:
 # the poller stops (unless ``--force``). Only FINAL stamps ``ended_at`` —
@@ -270,12 +284,16 @@ async def poll_nba_live(ctx: WorkerContext) -> str:
 
     Self-gating via the DB: off-days cost one indexed read of the cached
     schedule check (plus, once per day, one scoreboard call to refresh
-    that cache) — no scheduler pause/resume required.
+    that cache) — no scheduler pause/resume required. After FINAL the
+    same cycle also checks the team-site feed for post-game videos
+    inside the configured grace window.
     """
     worker = NbaPollWorker(
         nba=ctx.nba,
         sessions=ctx.sessions,
         team_abbreviation=ctx.settings.nba.team_abbreviation,
+        video_grace=timedelta(minutes=ctx.settings.nba.video_grace_minutes),
+        video_max_duration_seconds=ctx.settings.nba.video_max_duration_seconds,
     )
     return await worker.poll_once()
 
@@ -289,8 +307,11 @@ class NbaPollWorker:
        cost nothing), or store the game row (``league="nba"``) with both
        team rows.
     3. Refresh: apply the scoreboard's state/scores; the first FINAL
-       sighting stamps ``ended_at`` — the same grace-window start the
-       NHL poller uses for late highlight clips.
+       sighting stamps ``ended_at`` — the grace-window start for both
+       late quarter posts and the post-game video feed check.
+    4. Once FINAL: claim ``VIDEO`` posts for post-game highlights and
+       pressers from the team-site feed while ``ended_at`` is inside
+       ``video_grace`` (see :meth:`_queue_post_game_videos`).
     """
 
     def __init__(
@@ -299,10 +320,14 @@ class NbaPollWorker:
         nba: NbaService,
         sessions: async_sessionmaker[AsyncSession],
         team_abbreviation: str,
+        video_grace: timedelta,
+        video_max_duration_seconds: int,
     ) -> None:
         self._nba = nba
         self._sessions = sessions
         self._team = team_abbreviation.strip().upper()
+        self._video_grace = video_grace
+        self._video_max_duration_seconds = video_max_duration_seconds
 
     async def poll_once(self, *, force: bool = False, day: str | None = None) -> str:
         """Run a single cycle, returning a human-readable summary.
@@ -389,6 +414,10 @@ class NbaPollWorker:
             row.game_id,
             game,
             completed_quarters(row.game_state, status.period if status else None),
+            final=row.game_state == "FINAL",
+        )
+        video_queued = await self._queue_post_game_videos(
+            session, row, self._tri(away), self._tri(home)
         )
         await session.commit()
 
@@ -398,6 +427,8 @@ class NbaPollWorker:
         )
         if queued:
             summary += f" (+{queued} quarter-end post(s))"
+        if video_queued:
+            summary += f" (+{video_queued} video post(s))"
         logger.info("poll(nba): %s", summary)
         return summary
 
@@ -422,7 +453,25 @@ class NbaPollWorker:
         if not force:
             reason = _stop_reason(row.game_state)
             if reason is not None:
-                return f"{away.tri_code} @ {home.tri_code}: {reason}"
+                # Settled game: post-game videos keep arriving after the
+                # buzzer, so the team-site feed is still checked inside
+                # the video grace window (one cheap call per cycle);
+                # outside it — or for a game that never finished — the
+                # old stop reason stands with no feed call at all.
+                video_queued = await self._queue_post_game_videos(
+                    session, row, away.tri_code, home.tri_code
+                )
+                await session.commit()
+                if video_queued is None:
+                    return f"{away.tri_code} @ {home.tri_code}: {reason}"
+                summary = f"{away.tri_code} @ {home.tri_code}: final, checking videos"
+                summary += (
+                    f" (+{video_queued} video post(s))"
+                    if video_queued
+                    else " (no new videos)"
+                )
+                logger.info("poll(nba): %s", summary)
+                return summary
 
         scoreboard = await self._nba.get_scoreboard(day)
         game = next((g for g in scoreboard.events if g.id == row.game_id), None)
@@ -449,6 +498,10 @@ class NbaPollWorker:
             row.game_id,
             game,
             completed_quarters(row.game_state, status.period if status else None),
+            final=row.game_state == "FINAL",
+        )
+        video_queued = await self._queue_post_game_videos(
+            session, row, away.tri_code, home.tri_code, force=force
         )
         await session.commit()
 
@@ -458,6 +511,8 @@ class NbaPollWorker:
         )
         if queued:
             summary += f" (+{queued} quarter-end post(s))"
+        if video_queued:
+            summary += f" (+{video_queued} video post(s))"
         logger.info("poll(nba): %s", summary)
         return summary
 
@@ -467,6 +522,8 @@ class NbaPollWorker:
         game_id: int,
         espn_game: NbaScheduleGame,
         completed: list[int],
+        *,
+        final: bool = False,
     ) -> int:
         """Claim one ``period_end`` post per not-yet-queued quarter.
 
@@ -478,6 +535,18 @@ class NbaPollWorker:
         linescores summed through that quarter (a Q1 post caught mid-Q2
         still shows the Q1 buzzer score, not the live total), leaders
         from ESPN's per-team game leaders as of this fetch.
+
+        When ``final`` (the game is over), the deciding quarter — the
+        last one whose buzzer sounded (Q4, or the OT period) — gets
+        the result header (``Cleveland Cavaliers win! The Cleveland
+        Cavaliers defeat the New York Knicks 115-107.``) from
+        :meth:`PostTextBuilder.build_quarter_end_text`; the other
+        quarters keep the plain end-of-quarter line. Every quarter's
+        text also carries the game context when both teams' display
+        names are known (``The Cleveland Cavaliers trail the New York
+        Knicks by 4.``), read off the ESPN payload, and each header
+        line ends with ``#LetEmKnow`` — the Cavs campaign tag, passed
+        only when this poller's team is CLE.
 
         The summary fetch and text build run *before the caller
         commits*: any failure propagates and rolls the whole cycle
@@ -495,6 +564,29 @@ class NbaPollWorker:
         if not missing:
             return 0
 
+        # Both teams' display names feed every quarter's text: the
+        # context sentence on the plain headers, the result sentence
+        # on the deciding one. The name comes from the payload's
+        # displayName ("Cleveland Cavaliers"), falling back to the
+        # short name and finally the abbreviation.
+        deciding = max(completed) if final else None
+        tracked_full_name: str | None = None
+        opponent_full_name: str | None = None
+        tracked_at_home = False
+        if espn_game.involves(self._team):
+            home_c, away_c = espn_game.home_competitor, espn_game.away_competitor
+            tracked_at_home = home_c is not None and (
+                self._tri(home_c).upper() == self._team.upper()
+            )
+            tracked_c = home_c if tracked_at_home else away_c
+            opponent_c = away_c if tracked_at_home else home_c
+            tracked_full_name = self._team_full_name(tracked_c)
+            opponent_full_name = self._team_full_name(opponent_c)
+
+        # #LetEmKnow is the Cavs campaign tag — only on a Cavs game's
+        # posts; other teams' posts carry no tag.
+        campaign_tag = "LetEmKnow" if self._team.upper() == "CLE" else None
+
         summary = await self._nba.get_summary(game_id)
         home_lines, away_lines = linescores_by_side(summary, game_id)
         home_tri = self._tri(espn_game.home_competitor)
@@ -504,14 +596,24 @@ class NbaPollWorker:
 
         new_posts = 0
         for quarter in missing:
+            home_score = score_through(home_lines, quarter)
+            away_score = score_through(away_lines, quarter)
+            tracked_score = home_score if tracked_at_home else away_score
+            opponent_score = away_score if tracked_at_home else home_score
             text = PostTextBuilder.build_quarter_end_text(
                 period_number=quarter,
                 home_tri=home_tri,
-                home_score=score_through(home_lines, quarter),
+                home_score=home_score,
                 away_tri=away_tri,
-                away_score=score_through(away_lines, quarter),
+                away_score=away_score,
                 home_leaders=home_leaders,
                 away_leaders=away_leaders,
+                is_final=quarter == deciding,
+                tracked_full_name=tracked_full_name,
+                opponent_full_name=opponent_full_name,
+                tracked_score=tracked_score,
+                opponent_score=opponent_score,
+                campaign_tag=campaign_tag,
             )
             if await posts.claim_pending(
                 kind=PostKind.PERIOD_END,
@@ -527,6 +629,194 @@ class NbaPollWorker:
                     game_id,
                 )
         return new_posts
+
+    async def _queue_post_game_videos(
+        self,
+        session: AsyncSession,
+        row: Game,
+        away_tri: str,
+        home_tri: str,
+        *,
+        force: bool = False,
+    ) -> int | None:
+        """Claim one ``VIDEO`` post per postable feed video for this game.
+
+        Runs after FINAL — the team-site feed publishes highlights and
+        pressers minutes to ~2 hours after the buzzer — and only while
+        the ``ended_at`` grace window is open (``force`` bypasses the
+        window for backfills). Returns ``None`` when the window is
+        closed or the game never finished (no feed call), else the
+        number of newly claimed rows (0 = checked, nothing new).
+
+        Candidates come from the newest page of the feed, filtered by
+        :meth:`select_postable_videos`: tagged with *this* game via
+        ``taxonomy.games`` (Eastern date + away@home), highlights or
+        pressers only, and within Bluesky's duration cap. Dedup rides
+        the (game, event, kind) key with ``event_id`` = the feed's
+        video id; the best MP4 rendition is captured into
+        ``highlight_url`` at claim time so the poster never re-fetches.
+        """
+        if row.game_state != "FINAL":
+            return None
+        if row.ended_at is None:
+            # Legacy row stored FINAL before ended_at existed: start
+            # its window now so the check stays bounded.
+            row.ended_at = datetime.now(UTC)
+        if not force and not self._in_video_grace(row):
+            return None
+
+        page = await self._nba.content.get_latest_videos(count=50)
+        candidates = self.select_postable_videos(
+            page.results.items,
+            game_day=self._game_et_date(row.start_time),
+            away_tri=away_tri,
+            home_tri=home_tri,
+            max_duration_seconds=self._video_max_duration_seconds,
+        )
+        if not candidates:
+            return 0
+
+        posts = PostsRepo(session)
+        existing = await posts.existing_event_ids(row.game_id, PostKind.VIDEO)
+        new_posts = 0
+        for video in candidates:
+            if video.id in existing:
+                continue
+            assert video.video_assets is not None  # select_postable_videos filter
+            rendition = video.video_assets.best_rendition()
+            if rendition is None:
+                continue  # no MP4 rendition yet — next cycle re-checks
+            # Caption: the feed's description prose (falls back to the
+            # title when a feed item has none) plus the #LetEmKnow
+            # campaign tag — no emoji prefix. The description is
+            # trimmed to whatever room the suffix leaves under
+            # Bluesky's 300-char cap.
+            suffix = "\n\n#LetEmKnow"
+            description = (video.description or video.title).strip()
+            budget = 300 - len(suffix)
+            if len(description) > budget:
+                description = description[: budget - 1].rstrip() + "…"
+            caption = f"{description}{suffix}"
+            if await posts.claim_pending(
+                kind=PostKind.VIDEO,
+                game_id=row.game_id,
+                team=self._team,
+                event_id=video.id,
+                text=caption,
+                clip_id=video.id,
+                highlight_url=rendition.video,
+            ):
+                new_posts += 1
+                logger.info(
+                    "poll(nba): video post queued (%s, game %s)",
+                    video.title,
+                    row.game_id,
+                )
+        return new_posts
+
+    @staticmethod
+    def video_matches_game(
+        video: NbaContentVideo, *, game_day: date, away_tri: str, home_tri: str
+    ) -> bool:
+        """Whether the feed video belongs to the stored game.
+
+        Every game video carries ``taxonomy.games`` labels like
+        ``"11/11/2026 CLE@NYK 0022600218"`` — Eastern date plus the
+        away@home matchup (ESPN's order), which is exactly what the
+        stored game row knows, so both parts must match. Videos
+        without the tag (docuseries, team misc) never match; neither
+        does a video for the team's *other* recent game when labels
+        parse differently — a wrong match would post the wrong
+        highlight under the wrong game.
+        """
+        want_matchup = f"{away_tri}@{home_tri}"
+        for label in video.taxonomy.games.values():
+            parts = label.split()
+            if len(parts) < 2 or parts[1] != want_matchup:
+                continue
+            try:
+                month, day, year = parts[0].split("/")
+                label_day = date(int(year), int(month), int(day))
+            except ValueError:
+                continue
+            if label_day == game_day:
+                return True
+        return False
+
+    @staticmethod
+    def is_postable_nba_video(
+        video: NbaContentVideo, *, max_duration_seconds: int
+    ) -> bool:
+        """Whether the feed video is a highlight/presser Bluesky can take.
+
+        Selection: the ``game-highlights`` category slug (game *and*
+        player highlight cuts carry it) or a ``Post Game`` title
+        (pressers, which arrive as ``media-availability``). Pre-game
+        shootarounds, media availability without "Post Game", and
+        docuseries don't qualify.
+
+        The duration cap is Bluesky's 10-minute upload limit; videos
+        over it are skipped rather than queued to fail at upload. An
+        unknown duration is allowed (the feed always carries one in
+        practice) and a video without any MP4 rendition is never
+        postable.
+        """
+        assets = video.video_assets
+        if assets is None or not assets.renditions:
+            return False
+        slugs = video.taxonomy.categories
+        title = video.title or ""
+        if "game-highlights" not in slugs and "Post Game" not in title:
+            return False
+        duration_ms = assets.duration or max(
+            rendition.duration for rendition in assets.renditions.values()
+        )
+        return duration_ms <= max_duration_seconds * 1000
+
+    @staticmethod
+    def select_postable_videos(
+        videos: list[NbaContentVideo],
+        *,
+        game_day: date,
+        away_tri: str,
+        home_tri: str,
+        max_duration_seconds: int,
+    ) -> list[NbaContentVideo]:
+        """The feed page's videos worth queueing for this game, in feed order."""
+        return [
+            video
+            for video in videos
+            if NbaPollWorker.video_matches_game(
+                video, game_day=game_day, away_tri=away_tri, home_tri=home_tri
+            )
+            and NbaPollWorker.is_postable_nba_video(
+                video, max_duration_seconds=max_duration_seconds
+            )
+        ]
+
+    def _in_video_grace(self, row: Game) -> bool:
+        """Whether a final game is still inside its post-game video window.
+
+        Highlights typically land ~30-45 minutes after the buzzer and
+        pressers sooner, but one observed game took ~80 minutes; the
+        window from ``ended_at`` caps the wait either way (0 disables
+        video queueing entirely).
+        """
+        if self._video_grace <= timedelta(0):
+            return False
+        if row.ended_at is None:
+            return True
+        ended = row.ended_at
+        if ended.tzinfo is None:
+            ended = ended.replace(tzinfo=UTC)
+        return datetime.now(UTC) < ended + self._video_grace
+
+    @staticmethod
+    def _game_et_date(start: datetime) -> date:
+        """Eastern date of tip-off — the feed's game labels are ET dates."""
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=UTC)
+        return start.astimezone(_NBA_ET).date()
 
     async def _ensure_team(self, teams: TeamsRepo, competitor: NbaCompetitor) -> None:
         """Store the team row when missing — the scoreboard payload is
@@ -545,6 +835,20 @@ class NbaPollWorker:
     def _tri(competitor: NbaCompetitor) -> str:
         info = competitor.team
         return (info.abbreviation if info else None) or "?"
+
+    @staticmethod
+    def _team_full_name(competitor: NbaCompetitor | None) -> str | None:
+        """Full display name for the post's team sentences — ESPN's
+        ``displayName`` ("Cleveland Cavaliers"), falling back to the
+        short name and finally the abbreviation; ``None`` when the
+        payload carries no competitor/team at all (the post then
+        omits the sentence rather than guessing)."""
+        if competitor is None:
+            return None
+        info = competitor.team
+        if info is None:
+            return None
+        return info.display_name or info.name or info.abbreviation
 
     @staticmethod
     def _build_game(game: NbaScheduleGame) -> Game:

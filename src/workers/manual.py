@@ -82,12 +82,15 @@ async def _poll_nba(force: bool, day: str | None) -> None:
         nba=nba,
         sessions=AsyncSessionLocal,
         team_abbreviation=settings.nba.team_abbreviation,
+        video_grace=timedelta(minutes=settings.nba.video_grace_minutes),
+        video_max_duration_seconds=settings.nba.video_max_duration_seconds,
     )
     try:
         summary = await worker.poll_once(force=force, day=day)
         print(f"poll-nba: {summary}")
     finally:
         await nba.client.http.aclose()
+        await nba.content.http.aclose()
         await engine.dispose()
 
 
@@ -117,6 +120,7 @@ async def _post(force: bool, dry_run: bool) -> None:
         await nhl.client.http.aclose()
         await nhl.stats.http.aclose()
         await nba.client.http.aclose()
+        await nba.content.http.aclose()
         await engine.dispose()
 
 

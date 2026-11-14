@@ -30,41 +30,49 @@ class BlueskyClient:
         logger.info("logging into bsky as %s", self._username)
         await self.client.login(self._username, self._password)
 
-    def _build_text(self, text, tag):
-        return self.text_builder.text(text).tag(f"#{tag}", tag)
+    def _build_text(self, text: str) -> client_utils.TextBuilder:
+        """Rich text with a facet on the post's hashtag.
 
-    def _build_tagged_text(self, text: str, tag: str):
-        """Rich text whose hashtag facet is the first ``#TAG`` in text.
+        Bluesky only makes a hashtag tappable when a facet covers it,
+        so the ``#word`` in the text — a goal header's ``#CBJ``, the
+        ``#LetEmKnow`` on a quarter board or video caption — is split
+        out and faceted. Every post format carries exactly one; the
+        builder only facets what's there, it never invents a tag.
 
-        Post formats carry the tag at the front (``#CBJ goal!``) or
-        inside the header (``Final: #CBJ Win! 💥``); find the first
-        ``#{tag}`` occurrence and attach the tag facet there so it
-        renders as a tappable hashtag instead of inert text. Text
-        without the tag is sent as plain text.
+        atproto's ``TextBuilder`` mutates in place (its buffer and
+        facet list accumulate), so each post starts from a clean
+        ``self.text_builder`` — a reused instance would carry the
+        previous post's text into the next one.
         """
-        marker = f"#{tag}"
-        index = text.find(marker)
-        if index == -1:
-            return client_utils.TextBuilder().text(text)
-        head, tail = text[:index], text[index + len(marker) :]
-        builder = client_utils.TextBuilder()
-        if head:
-            builder = builder.text(head)
-        builder = builder.tag(marker, tag)
-        if tail:
-            builder = builder.text(tail)
-        return builder
+        self.text_builder = client_utils.TextBuilder()
+        builder = self.text_builder
+        start = text.find("#")
+        if start == -1:
+            return builder.text(text)
+        # The tag runs from "#" up to the first character that can't
+        # be part of a hashtag.
+        end = start + 1
+        while end < len(text) and (text[end].isalnum() or text[end] == "_"):
+            end += 1
+        if end == start + 1:
+            # A "#" with nothing tag-like after it — plain text.
+            return builder.text(text)
+        return (
+            builder.text(text[:start])
+            .tag(text[start:end], text[start + 1 : end])
+            .text(text[end:])
+        )
 
     async def post_text(self, text: str, tag: str) -> BlueskyPostRef:
         """Post plain text. Returns the new post's strong ref.
 
-        The first ``#{tag}`` in the text (the goal post format leads
-        with it) becomes the post's tag facet; there is no trailing
-        hashtag.
+        The hashtag already in the text (the goal post format leads
+        with ``#{tag}``) gets a facet; there is no trailing hashtag
+        on text posts.
         """
         await self._login()
         logger.info("posting text post")
-        built_text = self._build_tagged_text(text, tag)
+        built_text = self._build_text(text)
         resp = await self.client.send_post(text=built_text)
         return BlueskyPostRef(uri=resp.uri, cid=resp.cid)
 
@@ -91,7 +99,7 @@ class BlueskyClient:
             len(video),
             " quoting " + quote.uri if quote else "",
         )
-        built_text = self._build_text(text, tag)
+        built_text = self._build_text(text)
         if quote is None:
             resp = await self.client.send_video(
                 text=built_text, video=video, video_alt=alt
