@@ -3,20 +3,12 @@
 from __future__ import annotations
 
 import logging
-import re
 
 from atproto import AsyncClient, client_utils, models
 
 from models.bluesky import BlueskyPostRef
 
 logger = logging.getLogger(__name__)
-
-# A hashtag as Bluesky renders one: "#" at a word boundary followed by
-# tag characters. Post formats put hashtags in the body — goal headers
-# (``#CBJ power play goal!``), video captions (``... #CLE``), the
-# ``#LetEmKnow`` tag on quarter-end boards — and each one needs its own
-# facet to be tappable.
-_HASHTAG_RE = re.compile(r"(?<!\w)#([A-Za-z0-9_]+)")
 
 
 class BlueskyClient:
@@ -39,18 +31,13 @@ class BlueskyClient:
         await self.client.login(self._username, self._password)
 
     def _build_text(self, text: str) -> client_utils.TextBuilder:
-        """Rich text with a facet on every hashtag in ``text``.
+        """Rich text with a facet on the post's hashtag.
 
         Bluesky only makes a hashtag tappable when a facet covers it,
-        so every ``#word`` gets its own facet — not just the first one
-        (a ``#CBJ ...`` header plus ``#LetEmKnow`` would otherwise
-        leave the second tag inert).
-
-        The post formats carry their own hashtags in the body — goal
-        headers (``#CBJ power play goal!``), video captions
-        (``🎥 #CBJ``, ``... #CLE``), quarter boards ending their first
-        line with ``#LetEmKnow`` — so the builder only facets what's
-        there; it never invents a tag.
+        so the ``#word`` in the text — a goal header's ``#CBJ``, the
+        ``#LetEmKnow`` on a quarter board or video caption — is split
+        out and faceted. Every post format carries exactly one; the
+        builder only facets what's there, it never invents a tag.
 
         atproto's ``TextBuilder`` mutates in place (its buffer and
         facet list accumulate), so each post starts from a clean
@@ -59,23 +46,29 @@ class BlueskyClient:
         """
         self.text_builder = client_utils.TextBuilder()
         builder = self.text_builder
-        position = 0
-        for match in _HASHTAG_RE.finditer(text):
-            if match.start() > position:
-                builder = builder.text(text[position : match.start()])
-            display = match.group(0)
-            builder = builder.tag(display, display[1:])
-            position = match.end()
-        if position < len(text):
-            builder = builder.text(text[position:])
-        return builder
+        start = text.find("#")
+        if start == -1:
+            return builder.text(text)
+        # The tag runs from "#" up to the first character that can't
+        # be part of a hashtag.
+        end = start + 1
+        while end < len(text) and (text[end].isalnum() or text[end] == "_"):
+            end += 1
+        if end == start + 1:
+            # A "#" with nothing tag-like after it — plain text.
+            return builder.text(text)
+        return (
+            builder.text(text[:start])
+            .tag(text[start:end], text[start + 1 : end])
+            .text(text[end:])
+        )
 
     async def post_text(self, text: str, tag: str) -> BlueskyPostRef:
         """Post plain text. Returns the new post's strong ref.
 
-        Every hashtag already in the text (the goal post format leads
-        with ``#{tag}``) gets its own facet; there is no trailing
-        hashtag on text posts.
+        The hashtag already in the text (the goal post format leads
+        with ``#{tag}``) gets a facet; there is no trailing hashtag
+        on text posts.
         """
         await self._login()
         logger.info("posting text post")

@@ -687,11 +687,11 @@ class NbaPollWorker:
             if rendition is None:
                 continue  # no MP4 rendition yet — next cycle re-checks
             # Caption: the feed's description prose (falls back to the
-            # title when a feed item has none) plus the team hashtag
-            # and the #LetEmKnow campaign tag — no emoji prefix. The
-            # description is trimmed to whatever room the suffix
-            # leaves under Bluesky's 300-char cap.
-            suffix = f"\n\n#{self._team} #LetEmKnow"
+            # title when a feed item has none) plus the #LetEmKnow
+            # campaign tag — no emoji prefix. The description is
+            # trimmed to whatever room the suffix leaves under
+            # Bluesky's 300-char cap.
+            suffix = "\n\n#LetEmKnow"
             description = (video.description or video.title).strip()
             budget = 300 - len(suffix)
             if len(description) > budget:

@@ -1,5 +1,5 @@
 """Tests for BlueskyClient: credentials are injected, and rich text
-building facets every hashtag.
+building facets the post's hashtag.
 
 The client has no settings or account knowledge — whatever handle and
 password it is built with are exactly the ones it logs in with, so the
@@ -66,7 +66,16 @@ class TestTextBuilding:
         assert builder.build_text() == "🎥 #CBJ"
         assert facet_pairs(builder) == [("#CBJ", "CBJ")]
 
-    def test_facets_every_hashtag_not_just_the_first(self) -> None:
+    def test_facets_leading_hashtag_followed_by_prose(self) -> None:
+        # Goal headers lead with the tag and keep going: "#CBJ power
+        # play goal!" — the facet covers just the hashtag.
+        text = "#CBJ power play goal!"
+        builder = build_client()._build_text(text)
+
+        assert builder.build_text() == text
+        assert facet_pairs(builder) == [("#CBJ", "CBJ")]
+
+    def test_facets_hashtag_in_the_header_line(self) -> None:
         # Quarter-end posts carry #LetEmKnow on the header line: it
         # still needs its own facet or it renders as inert text.
         text = "End of the 1st quarter. #LetEmKnow\n\nCLE: 119  |  PHI: 95"
@@ -75,16 +84,14 @@ class TestTextBuilding:
         assert builder.build_text() == text
         assert facet_pairs(builder) == [("#LetEmKnow", "LetEmKnow")]
 
-    def test_facets_each_tag_in_a_multi_hashtag_post(self) -> None:
-        # Team tag in the body plus the campaign tag — both tappable.
-        text = "#CBJ power play goal!\n\nScoreboard\n\n#LetEmKnow"
+    def test_facets_tag_trailing_a_description(self) -> None:
+        # Video captions are description prose with the hashtag at
+        # the very end — the split lands there.
+        text = "Cavs guard James Harden recorded his first 30-point game.\n\n#LetEmKnow"
         builder = build_client()._build_text(text)
 
         assert builder.build_text() == text
-        assert facet_pairs(builder) == [
-            ("#CBJ", "CBJ"),
-            ("#LetEmKnow", "LetEmKnow"),
-        ]
+        assert facet_pairs(builder) == [("#LetEmKnow", "LetEmKnow")]
 
     def test_plain_text_stays_plain(self) -> None:
         builder = build_client()._build_text("no tags here")

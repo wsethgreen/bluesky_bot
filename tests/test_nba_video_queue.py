@@ -267,9 +267,9 @@ class TestQueuePostGameVideos:
             highlight["highlight_url"] == f"https://cdn.nba.com/{HIGHLIGHT.id}-720.mp4"
         )
         # Caption: the feed's description prose (title as fallback)
-        # plus the team hashtag and the #LetEmKnow campaign tag.
+        # plus the #LetEmKnow campaign tag.
         assert HIGHLIGHT.title in highlight["text"]
-        assert "#CLE" in highlight["text"]
+        assert "#CLE" not in highlight["text"]
         assert "#LetEmKnow" in highlight["text"]
 
     def test_caption_prefers_description_over_title(self) -> None:
@@ -290,7 +290,8 @@ class TestQueuePostGameVideos:
         assert "first 30-point game" in text  # the description, not the title
         assert video.title not in text
         assert not text.startswith("🎥")  # no emoji prefix on NBA captions
-        assert text.endswith("\n\n#CLE #LetEmKnow")
+        assert text.endswith("\n\n#LetEmKnow")
+        assert "#CLE" not in text
 
     def test_overlong_description_is_trimmed_under_bluesky_cap(self) -> None:
         # A runaway description must not push the post over Bluesky's
@@ -304,7 +305,7 @@ class TestQueuePostGameVideos:
 
         text = claim_params(session)[0]["text"]
         assert len(text) <= 300
-        assert text.endswith("#CLE #LetEmKnow")
+        assert text.endswith("#LetEmKnow")
 
     def test_skips_already_queued_video_ids(self) -> None:
         worker = make_worker([HIGHLIGHT, PRESSER])
