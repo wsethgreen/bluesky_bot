@@ -342,8 +342,10 @@ class PostTextBuilder:
         The header is a sentence: the end-of-quarter line, then — when
         both teams' display names and both scores are known — the game
         context ("The Cleveland Cavaliers lead/trail the New York
-        Knicks by N."). A tie (margin 0) or missing name/score gets no
-        context sentence; the end-of-quarter line stands alone.
+        Knicks by N."), or the tie line when the sides are level ("The
+        Cleveland Cavaliers and the New York Knicks are tied at
+        55-55."). A missing name/score gets no sentence; the
+        end-of-quarter line stands alone.
 
         When the game is over, the deciding quarter's header announces
         the tracked team's result instead (the caller passes
@@ -358,8 +360,8 @@ class PostTextBuilder:
         display names from the ESPN payload; ``tracked_score`` /
         ``opponent_score`` pick win vs. lose. A tie or a missing
         name/score can't claim a result, so those fall back to the
-        plain end-of-quarter header (plus the context sentence, when
-        it applies).
+        plain end-of-quarter header plus its header sentence (the
+        tie line, when both names are known).
 
         The plain header follows :meth:`build_period_end_text`'s rules
         with basketball's regulation length: a missing number renders
@@ -418,22 +420,29 @@ class PostTextBuilder:
                 header = "End of overtime."
             else:
                 header = f"End of the {_ordinal(period_number)} quarter."
-            # Context sentence: who leads and by how much. Needs both
-            # full names and both scores; a tie (margin 0) or missing
-            # data gets no sentence.
+            # Context sentence: who leads and by how much — or the
+            # tie line when the sides are level. Needs both teams'
+            # full names and both scores; missing data gets no
+            # sentence at all.
             if (
                 tracked_full_name
                 and opponent_full_name
                 and tracked_score is not None
                 and opponent_score is not None
-                and tracked_score != opponent_score
             ):
-                margin = abs(tracked_score - opponent_score)
-                verb = "lead" if tracked_score > opponent_score else "trail"
-                header += (
-                    f" The {tracked_full_name} {verb}"
-                    f" {_article(opponent_full_name)} by {margin}."
-                )
+                if tracked_score == opponent_score:
+                    header += (
+                        f" The {tracked_full_name} and"
+                        f" {_article(opponent_full_name)} are tied at"
+                        f" {tracked_score}-{opponent_score}."
+                    )
+                else:
+                    margin = abs(tracked_score - opponent_score)
+                    verb = "lead" if tracked_score > opponent_score else "trail"
+                    header += (
+                        f" The {tracked_full_name} {verb}"
+                        f" {_article(opponent_full_name)} by {margin}."
+                    )
 
         # (left label, left value, right label | None, right value);
         # the score row names both sides, leader rows label only left.

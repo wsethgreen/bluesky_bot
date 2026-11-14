@@ -84,46 +84,41 @@ class TestQuarterEndScoreboard:
         # Regression guard: the earlier ruled layout was 371 chars and
         # the API rejects anything over 300. Long team names in the
         # header sentence plus the longest realistic player names
-        # must still fit.
-        text = build(
-            home_score=123,
-            away_score=118,
-            tracked_score=118,
-            opponent_score=123,
-            **NAMES,
-            home_leaders={
+        # must still fit — the tie line is the longest header.
+        longest_leaders = {
+            "home": {
                 "PTS": "Gilgeous-Alexander 31",
                 "REB": "Mitchell 12",
                 "AST": "Donovan Mitchell 9",
             },
-            away_leaders={
+            "away": {
                 "PTS": "Tatum 40",
                 "REB": "Brown 15",
                 "AST": "White 10",
             },
-        )
-        assert len(text) <= 300
-        # The game-over variant's header (result + score sentence)
-        # runs a little longer — same cap.
-        final = build(
-            home_score=123,
-            away_score=118,
-            is_final=True,
-            tracked_score=123,
-            opponent_score=118,
-            **NAMES,
-            home_leaders={
-                "PTS": "Gilgeous-Alexander 31",
-                "REB": "Mitchell 12",
-                "AST": "Donovan Mitchell 9",
+        }
+        cases = [
+            # trail sentence
+            {"away_score": 118, "tracked_score": 118, "opponent_score": 123},
+            # game-over result + score sentence
+            {
+                "away_score": 118,
+                "is_final": True,
+                "tracked_score": 123,
+                "opponent_score": 118,
             },
-            away_leaders={
-                "PTS": "Tatum 40",
-                "REB": "Brown 15",
-                "AST": "White 10",
-            },
-        )
-        assert len(final) <= 300
+            # tie sentence (the longest header form)
+            {"away_score": 123, "tracked_score": 123, "opponent_score": 123},
+        ]
+        for case in cases:
+            text = build(
+                home_score=123,
+                home_leaders=longest_leaders["home"],
+                away_leaders=longest_leaders["away"],
+                **NAMES,
+                **case,
+            )
+            assert len(text) <= 300
 
     def test_without_leaders_only_the_scoreboard_shows(self) -> None:
         lines = build(home_leaders=None, away_leaders=None).splitlines()
@@ -177,10 +172,13 @@ class TestQuarterEndContextSentence:
             " the New York Knicks by 4."
         )
 
-    def test_tie_gets_no_sentence(self) -> None:
-        # A tied game has no leader to name — the plain line stands.
-        text = build(**NAMES, tracked_score=110, opponent_score=110)
-        assert text.splitlines()[0] == "End of the 1st quarter."
+    def test_tie_sentence(self) -> None:
+        # Level sides: neither team leads — the tie line names both.
+        text = build(**NAMES, tracked_score=55, opponent_score=55)
+        assert text.splitlines()[0] == (
+            "End of the 1st quarter. The Cleveland Cavaliers and"
+            " the New York Knicks are tied at 55-55."
+        )
 
     def test_missing_opponent_name_gets_no_sentence(self) -> None:
         text = build(
@@ -250,7 +248,8 @@ class TestQuarterEndFinalHeader:
         assert text.splitlines()[0] == "Cleveland Cavaliers win!"
 
     def test_tie_falls_back_to_plain_header(self) -> None:
-        # A tie can't claim a result — the end-of-quarter line stands.
+        # A tie can't claim a result — the end-of-quarter line stands
+        # (no opponent name here, so no tie sentence either).
         text = build(
             is_final=True,
             tracked_full_name="Cleveland Cavaliers",
@@ -258,6 +257,14 @@ class TestQuarterEndFinalHeader:
             opponent_score=110,
         )
         assert text.splitlines()[0] == "End of the 1st quarter."
+
+    def test_final_tie_announces_tie_not_result(self) -> None:
+        # Result needs a winner; a level final keeps the tie line.
+        text = build(is_final=True, tracked_score=110, opponent_score=110, **NAMES)
+        assert text.splitlines()[0] == (
+            "End of the 1st quarter. The Cleveland Cavaliers and"
+            " the New York Knicks are tied at 110-110."
+        )
 
     def test_missing_name_or_scores_fall_back(self) -> None:
         no_name = build(is_final=True, tracked_score=115, opponent_score=107)
