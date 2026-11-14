@@ -88,6 +88,24 @@ class NbaSettings(BaseSettings):
         ge=1,
         description="NBA poller interval in minutes",
     )
+    video_grace_minutes: int = Field(
+        default=180,
+        ge=0,
+        description=(
+            "How long after FINAL to keep checking the team-site feed "
+            "for post-game videos (highlights, pressers) — they land "
+            "minutes to ~2 hours after the buzzer. 0 disables video "
+            "queueing."
+        ),
+    )
+    video_max_duration_seconds: int = Field(
+        default=600,
+        ge=1,
+        description=(
+            "Skip feed videos longer than this — Bluesky's video "
+            "upload cap is 10 minutes (600s)"
+        ),
+    )
 
 
 class PollerSettings(BaseSettings):
@@ -107,11 +125,13 @@ class PosterSettings(BaseSettings):
         default=1, ge=1, description="Poster interval in minutes (1 = every minute)"
     )
     window_hours: int = Field(
-        default=4,
+        default=6,
         ge=1,
         description=(
             "Publish a game's posts only within this many hours of its "
-            "start; --force bypasses the window"
+            "start; --force bypasses the window. Must outlast game "
+            "length plus the NBA video grace window (highlights land "
+            "up to ~2h after a 7:30 tip)"
         ),
     )
 

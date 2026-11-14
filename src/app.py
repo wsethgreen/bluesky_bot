@@ -15,11 +15,13 @@ from db.engine import engine
 from db.session import AsyncSessionLocal
 from jobs.registry import staleness_thresholds
 from repos.job_runs_repo import JobRunsRepo
+from routes.nba.videos import router as nba_videos_router
 from routes.nhl.goals import router as nhl_goals_router
 from routes.nhl.players import router as nhl_players_router
 from routes.nhl.schedule import router as nhl_schedule_router
 from routes.nhl.teams import router as nhl_teams_router
 from routes.nhl.videos import router as nhl_videos_router
+from services.nba_service import NbaService
 from services.nhl_service import NhlService
 
 logger = logging.getLogger(__name__)
@@ -29,6 +31,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     get_settings()
     app.state.nhl_service = NhlService()
+    app.state.nba_service = NbaService()
     try:
         yield
     finally:
@@ -36,17 +39,25 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if service is not None:
             await service.client.http.aclose()
             await service.stats.http.aclose()
+        nba = app.state.nba_service
+        if nba is not None:
+            await nba.client.http.aclose()
+            await nba.content.http.aclose()
         await engine.dispose()
 
 
 app = FastAPI(
     title="bluesky-bot",
-    description="NHL bot API: schedules and highlights.",
+    description="NHL/NBA bot API: schedules and highlights.",
     version="0.1.0",
     lifespan=lifespan,
     openapi_tags=[
         {"name": "system", "description": "Service health."},
         {"name": "nhl", "description": "Official NHL Web API."},
+        {
+            "name": "nba",
+            "description": "NBA team content (Cavaliers videos) + ESPN scoreboard.",
+        },
     ],
 )
 
@@ -109,3 +120,4 @@ app.include_router(nhl_teams_router)
 app.include_router(nhl_videos_router)
 app.include_router(nhl_goals_router)
 app.include_router(nhl_players_router)
+app.include_router(nba_videos_router)

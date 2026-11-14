@@ -3,12 +3,20 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from atproto import AsyncClient, client_utils, models
 
 from models.bluesky import BlueskyPostRef
 
 logger = logging.getLogger(__name__)
+
+# A hashtag as Bluesky renders one: "#" at a word boundary followed by
+# tag characters. Post formats put hashtags in the body — goal headers
+# (``#CBJ power play goal!``), video captions (``... #CLE``), the
+# ``#LetEmKnow`` tag on quarter-end boards — and each one needs its own
+# facet to be tappable.
+_HASHTAG_RE = re.compile(r"(?<!\w)#([A-Za-z0-9_]+)")
 
 
 class BlueskyClient:
@@ -24,47 +32,54 @@ class BlueskyClient:
         self._username = account_handle
         self._password = account_password
         self.client = AsyncClient()
-        self.text_builder = client_utils.TextBuilder()
 
     async def _login(self) -> None:
         logger.info("logging into bsky as %s", self._username)
         await self.client.login(self._username, self._password)
 
-    def _build_text(self, text, tag):
-        return self.text_builder.text(text).tag(f"#{tag}", tag)
+    def _build_text(
+        self, text: str, tag: str | None = None
+    ) -> client_utils.TextBuilder:
+        """Rich text with a facet on every hashtag in ``text``.
 
-    def _build_tagged_text(self, text: str, tag: str):
-        """Rich text whose hashtag facet is the first ``#TAG`` in text.
+        Bluesky only makes a hashtag tappable when a facet covers it,
+        so every ``#word`` gets its own facet — not just the first one
+        (a ``#CBJ ...`` header plus a trailing ``#LetEmKnow`` would
+        otherwise leave the second tag inert).
 
-        Post formats carry the tag at the front (``#CBJ goal!``) or
-        inside the header (``Final: #CBJ Win! 💥``); find the first
-        ``#{tag}`` occurrence and attach the tag facet there so it
-        renders as a tappable hashtag instead of inert text. Text
-        without the tag is sent as plain text.
+        ``tag`` is the poster's team: appended when the text does not
+        already contain it as a hashtag. The NHL video caption is just
+        the camera emoji and relies on this append, while NBA captions
+        already carry ``#CLE`` — appending blindly would publish
+        ``#CLE#CLE``.
+
+        A fresh builder per call: a shared instance would leak the
+        previous post's text and facets into the next one.
         """
-        marker = f"#{tag}"
-        index = text.find(marker)
-        if index == -1:
-            return client_utils.TextBuilder().text(text)
-        head, tail = text[:index], text[index + len(marker) :]
+        if tag is not None and not re.search(rf"(?<!\w)#{re.escape(tag)}(?!\w)", text):
+            text = f"{text}#{tag}"
         builder = client_utils.TextBuilder()
-        if head:
-            builder = builder.text(head)
-        builder = builder.tag(marker, tag)
-        if tail:
-            builder = builder.text(tail)
+        position = 0
+        for match in _HASHTAG_RE.finditer(text):
+            if match.start() > position:
+                builder = builder.text(text[position : match.start()])
+            display = match.group(0)
+            builder = builder.tag(display, display[1:])
+            position = match.end()
+        if position < len(text):
+            builder = builder.text(text[position:])
         return builder
 
     async def post_text(self, text: str, tag: str) -> BlueskyPostRef:
         """Post plain text. Returns the new post's strong ref.
 
-        The first ``#{tag}`` in the text (the goal post format leads
-        with it) becomes the post's tag facet; there is no trailing
-        hashtag.
+        Every hashtag already in the text (the goal post format leads
+        with ``#{tag}``) gets its own facet; there is no trailing
+        hashtag on text posts.
         """
         await self._login()
         logger.info("posting text post")
-        built_text = self._build_tagged_text(text, tag)
+        built_text = self._build_text(text)
         resp = await self.client.send_post(text=built_text)
         return BlueskyPostRef(uri=resp.uri, cid=resp.cid)
 

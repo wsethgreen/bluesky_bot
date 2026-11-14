@@ -13,6 +13,8 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import Select
+from sqlalchemy.dialects.postgresql import asyncpg as asyncpg_dialect
 
 from clients.nba_live_client import NbaLiveClient
 from db.models.game import Game
@@ -30,7 +32,7 @@ from jobs.poll_nba_live import (
     season_code,
     team_leaders,
 )
-from models.nba_live import NbaScoreboardResponse
+from models.nba_live import NbaScheduleGame, NbaScoreboardResponse
 from models.nba_summary import NbaSummaryLineScore, NbaSummaryResponse
 from services.post_text import PostTextBuilder
 
@@ -621,12 +623,17 @@ class TestQuarterPostFromSummary:
             away_leaders=leader_cells(team_leaders(summary, "PHI")),
         )
         lines = text.splitlines()
-        assert lines[0] == "End of 1st quarter."
-        assert lines[2] == f"CLE: {'33':<19} | PHI: 22"
-        assert lines[3] == "PTS: Donovan Mitchell 23 | Jaylen Brown 20"
-        assert lines[4] == f"REB: {'Mario Hezonja 10':<19} | LeBron James 7"
-        assert lines[5] == f"AST: {'Donovan Mitchell 8':<19} | Jaylen Brown 5"
-        assert len(lines) == 6
+        assert lines[0] == "End of the 1st quarter."
+        assert lines[2] == "CLE: 33  |  PHI: 22"
+        # Blank line: the score row stands alone above the leaders.
+        assert lines[3] == ""
+        assert lines[4] == "PTS: Donovan Mitchell 23  |  Jaylen Brown 20"
+        assert lines[5] == "REB: Mario Hezonja 10  |  LeBron James 7"
+        assert lines[6] == "AST: Donovan Mitchell 8  |  Jaylen Brown 5"
+        # The campaign tag trails as its own paragraph.
+        assert lines[7] == ""
+        assert lines[8] == "#LetEmKnow"
+        assert len(lines) == 9
 
     def test_final_quarter_uses_final_buzzer_scores(self) -> None:
         summary = NbaSummaryResponse.model_validate(make_summary_payload())
@@ -639,8 +646,124 @@ class TestQuarterPostFromSummary:
             away_score=score_through(away, 4),
         )
         lines = text.splitlines()
-        assert lines[0] == "End of 4th quarter."
-        assert lines[2] == "CLE: 119 | PHI: 95"
+        assert lines[0] == "End of the 4th quarter."
+        assert lines[2] == "CLE: 119  |  PHI: 95"
+
+
+class FakeResult:
+    def __init__(self, rows=(), rowcount: int = 0) -> None:
+        self._rows = list(rows)
+        self.rowcount = rowcount
+
+    def __iter__(self):
+        return iter(self._rows)
+
+
+class FakeSession:
+    """Enough AsyncSession for PostsRepo: Select answers ``existing``,
+    everything else (the inserts) reports rowcount=1 (claimed)."""
+
+    def __init__(self, existing: tuple[int, ...] = ()) -> None:
+        self._existing = existing
+        self.statements: list = []
+
+    async def execute(self, stmt):
+        self.statements.append(stmt)
+        if isinstance(stmt, Select):
+            return FakeResult(rows=[(event_id,) for event_id in self._existing])
+        return FakeResult(rowcount=1)
+
+
+def claim_params(session: FakeSession) -> list[dict]:
+    """Bound params of each executed insert (the claim calls)."""
+    return [
+        dict(stmt.compile(dialect=asyncpg_dialect.dialect()).params)
+        for stmt in session.statements
+        if not isinstance(stmt, Select)
+    ]
+
+
+class TestQueueQuarterEnds:
+    """_queue_quarter_ends: dedup, and the game-over result header."""
+
+    @staticmethod
+    def make_worker() -> NbaPollWorker:
+        # Bypass __init__: it builds real API clients from settings;
+        # the queue path only needs the summary stub and the team.
+        summary = NbaSummaryResponse.model_validate(make_summary_payload())
+
+        async def get_summary(game_id: int):
+            return summary
+
+        worker = NbaPollWorker.__new__(NbaPollWorker)
+        worker._team = "CLE"
+        worker._nba = SimpleNamespace(get_summary=get_summary)  # type: ignore[assignment]
+        return worker
+
+    @staticmethod
+    def final_event() -> NbaScheduleGame:
+        # CLE at home, display name "City CLE" (make_event's fixture);
+        # the summary's buzzer score is CLE 119, PHI 95.
+        return parse(make_event(state="post", away_abbrev="PHI", home_abbrev="CLE"))[0]
+
+    def test_final_game_result_header_on_deciding_quarter(self) -> None:
+        worker = self.make_worker()
+        session = FakeSession()
+
+        claimed = asyncio.run(
+            worker._queue_quarter_ends(
+                session, 401909289, self.final_event(), [1, 2, 3, 4], final=True
+            )
+        )
+
+        assert claimed == 4
+        texts = [p["text"] for p in claim_params(session)]
+        # Q1-Q3 keep the plain line — now with the context sentence
+        # (Q1: CLE 33, PHI 22 → lead by 11); only the deciding
+        # quarter announces the tracked team's result, with the
+        # same-line score sentence naming the opponent.
+        assert texts[0].splitlines()[0] == (
+            "End of the 1st quarter. The City CLE lead the City PHI by 11."
+        )
+        assert texts[3].splitlines()[0] == (
+            "City CLE win! The City CLE defeat the City PHI 119-95."
+        )
+        assert texts[3].splitlines()[2].startswith("CLE: 119")
+        assert texts[3].endswith("\n\n#LetEmKnow")
+
+    def test_deciding_quarter_stays_plain_while_not_final(self) -> None:
+        # completed=[1..4] while the game is still open (LIVE into
+        # OT): the Q4 post must not claim a result.
+        worker = self.make_worker()
+        session = FakeSession()
+
+        asyncio.run(
+            worker._queue_quarter_ends(
+                session, 401909289, self.final_event(), [1, 2, 3, 4], final=False
+            )
+        )
+
+        texts = [p["text"] for p in claim_params(session)]
+        # Plain header (no result) — the context sentence still names
+        # the margin: CLE 119, PHI 95 through Q4.
+        assert texts[3].splitlines()[0] == (
+            "End of the 4th quarter. The City CLE lead the City PHI by 24."
+        )
+
+    def test_already_claimed_quarters_are_not_requeued(self) -> None:
+        worker = self.make_worker()
+        session = FakeSession(existing=(1, 2, 3))  # Q4 still missing
+
+        claimed = asyncio.run(
+            worker._queue_quarter_ends(
+                session, 401909289, self.final_event(), [1, 2, 3, 4], final=True
+            )
+        )
+
+        assert claimed == 1
+        texts = [p["text"] for p in claim_params(session)]
+        assert len(texts) == 1
+        assert texts[0].startswith("City CLE win!")
 
 
 class _RecordingHttp:

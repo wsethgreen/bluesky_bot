@@ -57,6 +57,7 @@ async def _run_scheduler() -> None:
         await nhl.client.http.aclose()
         await nhl.stats.http.aclose()
         await nba.client.http.aclose()
+        await nba.content.http.aclose()
         await engine.dispose()
 
 

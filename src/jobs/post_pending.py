@@ -8,9 +8,10 @@ head-of-line block newer in-window posts behind it. Text rows (goal
 announcements, end-of-period scoreboards, and penalty updates) go out
 immediately.
 Video rows resolve a direct MP4 URL for the owning game's league
-(``_resolver_for``: Brightcove for the NHL, more leagues as they are
-added), download it, and post it with the short caption — quoting the
-goal's text post when that post is already up, standalone otherwise.
+(``_resolver_for``: Brightcove for the NHL, the claim-time content-feed
+URL for the NBA), download it, and post it with the short caption —
+quoting the goal's text post when that post is already up, standalone
+otherwise.
 Every row publishes from its league's own Bluesky account
 (``_account_for``: the CBJ account for the NHL, the Cavs account for
 the NBA), so the two bots never cross-post.
@@ -128,9 +129,10 @@ async def post_pending(ctx: WorkerContext, *, force: bool = False) -> str:
             if post.kind == PostKind.VIDEO:
                 quote = await _quoted_text_ref(posts, post)
 
-                # League-specific resolution (Brightcove for the NHL;
-                # more leagues register in _VIDEO_RESOLVERS). None means
-                # no playable rendition right now — retry next run.
+                # League-specific resolution (Brightcove for the NHL,
+                # claim-time feed URL for the NBA; more leagues register
+                # in _VIDEO_RESOLVERS). None means no playable
+                # rendition right now — retry next run.
                 resolver = _resolver_for(game.league)
                 mp4_url = await resolver(ctx, post)
                 if mp4_url is None:
@@ -229,7 +231,24 @@ async def _nhl_mp4_url(ctx: WorkerContext, post: Post) -> str | None:
     return mp4.src
 
 
-_VIDEO_RESOLVERS: dict[str, VideoResolver] = {"nhl": _nhl_mp4_url}
+async def _nba_mp4_url(ctx: WorkerContext, post: Post) -> str | None:
+    """NBA content-feed URL captured at claim time from the team feed.
+
+    The poller picks the best ``videoAssets`` rendition when it claims
+    the row and stores it in ``highlight_url``, so the poster needs no
+    second feed fetch. A row without one is malformed (claim always
+    captures it when a rendition exists), so it raises toward
+    ``MAX_ATTEMPTS`` like a missing Brightcove clip id.
+    """
+    if post.highlight_url is None:
+        raise ValueError("video row has no highlight_url")
+    return post.highlight_url
+
+
+_VIDEO_RESOLVERS: dict[str, VideoResolver] = {
+    "nhl": _nhl_mp4_url,
+    "nba": _nba_mp4_url,
+}
 
 
 def _account_for(settings: Settings, league: str) -> BlueskyAccountSettings:

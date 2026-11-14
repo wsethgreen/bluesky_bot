@@ -1,4 +1,5 @@
-"""Tests for BlueskyClient's constructor: credentials are injected.
+"""Tests for BlueskyClient: credentials are injected, and rich text
+building facets every hashtag.
 
 The client has no settings or account knowledge — whatever handle and
 password it is built with are exactly the ones it logs in with, so the
@@ -8,6 +9,18 @@ caller (post_pending) owns pulling the right account from Settings.
 import asyncio
 
 from clients.bluesky_client import BlueskyClient
+
+
+def facet_pairs(builder) -> list[tuple[str, str]]:
+    """(displayed text, tag) of each facet, decoded from byte offsets."""
+    text = builder.build_text().encode()
+    return [
+        (
+            text[f.index.byte_start : f.index.byte_end].decode(),
+            f.features[0].tag,
+        )
+        for f in builder.build_facets()
+    ]
 
 
 class _RecordingLogin:
@@ -38,3 +51,63 @@ class TestCredentialInjection:
         asyncio.run(client._login())
 
         assert stub.calls == [("cavs-bot.bsky.social", "pw")]
+
+
+def build_client() -> BlueskyClient:
+    return BlueskyClient(account_handle="cavs-bot.bsky.social", account_password="pw")
+
+
+class TestTextBuilding:
+    def test_appends_missing_team_tag_with_a_facet(self) -> None:
+        # The NHL video caption is just the camera emoji — the team
+        # hashtag is appended by the client and must be tappable.
+        builder = build_client()._build_text("🎥 ", "CBJ")
+
+        assert builder.build_text() == "🎥 #CBJ"
+        assert facet_pairs(builder) == [("#CBJ", "CBJ")]
+
+    def test_does_not_duplicate_a_team_tag_already_present(self) -> None:
+        # NBA captions end with "#CLE": appending blindly would
+        # publish "...#CLE#CLE" with two competing facets.
+        text = "🎥 Highlights\n\n#CLE"
+        builder = build_client()._build_text(text, "CLE")
+
+        assert builder.build_text() == text
+        assert facet_pairs(builder) == [("#CLE", "CLE")]
+
+    def test_facets_every_hashtag_not_just_the_first(self) -> None:
+        # Quarter-end posts carry #LetEmKnow without a team tag: it
+        # still needs its own facet or it renders as inert text.
+        text = "End of 1st quarter.\n\nCLE: 119 | PHI: 95\n\n#LetEmKnow"
+        builder = build_client()._build_text(text)
+
+        assert builder.build_text() == text
+        assert facet_pairs(builder) == [("#LetEmKnow", "LetEmKnow")]
+
+    def test_facets_each_tag_in_a_multi_hashtag_post(self) -> None:
+        # Team tag in the body plus the campaign tag — both tappable.
+        text = "#CBJ power play goal!\n\nScoreboard\n\n#LetEmKnow"
+        builder = build_client()._build_text(text, "CBJ")
+
+        assert builder.build_text() == text  # team tag already present
+        assert facet_pairs(builder) == [
+            ("#CBJ", "CBJ"),
+            ("#LetEmKnow", "LetEmKnow"),
+        ]
+
+    def test_plain_text_stays_plain(self) -> None:
+        builder = build_client()._build_text("no tags here")
+
+        assert builder.build_text() == "no tags here"
+        assert builder.build_facets() == []
+
+    def test_builders_do_not_leak_state_across_calls(self) -> None:
+        # A shared builder instance would carry the previous post's
+        # text and facets into the next one.
+        client = build_client()
+        first = client._build_text("#CBJ goal!", "CBJ")
+        second = client._build_text("🎥 ", "CBJ")
+
+        assert first.build_text() == "#CBJ goal!"
+        assert second.build_text() == "🎥 #CBJ"
+        assert facet_pairs(second) == [("#CBJ", "CBJ")]
