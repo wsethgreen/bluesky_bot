@@ -544,7 +544,9 @@ class NbaPollWorker:
         quarters keep the plain end-of-quarter line. Every quarter's
         text also carries the game context when both teams' display
         names are known (``The Cleveland Cavaliers trail the New York
-        Knicks by 4.``), read off the ESPN payload.
+        Knicks by 4.``), read off the ESPN payload, and each header
+        line ends with ``#LetEmKnow`` — the Cavs campaign tag, passed
+        only when this poller's team is CLE.
 
         The summary fetch and text build run *before the caller
         commits*: any failure propagates and rolls the whole cycle
@@ -581,6 +583,10 @@ class NbaPollWorker:
             tracked_full_name = self._team_full_name(tracked_c)
             opponent_full_name = self._team_full_name(opponent_c)
 
+        # #LetEmKnow is the Cavs campaign tag — only on a Cavs game's
+        # posts; other teams' posts carry no tag.
+        campaign_tag = "LetEmKnow" if self._team.upper() == "CLE" else None
+
         summary = await self._nba.get_summary(game_id)
         home_lines, away_lines = linescores_by_side(summary, game_id)
         home_tri = self._tri(espn_game.home_competitor)
@@ -607,6 +613,7 @@ class NbaPollWorker:
                 opponent_full_name=opponent_full_name,
                 tracked_score=tracked_score,
                 opponent_score=opponent_score,
+                campaign_tag=campaign_tag,
             )
             if await posts.claim_pending(
                 kind=PostKind.PERIOD_END,

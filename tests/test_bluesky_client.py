@@ -58,27 +58,18 @@ def build_client() -> BlueskyClient:
 
 
 class TestTextBuilding:
-    def test_appends_missing_team_tag_with_a_facet(self) -> None:
-        # The NHL video caption is just the camera emoji — the team
-        # hashtag is appended by the client and must be tappable.
-        builder = build_client()._build_text("🎥 ", "CBJ")
+    def test_video_caption_tag_is_faceted(self) -> None:
+        # The NHL video caption carries its own team hashtag in the
+        # text — the builder facets it, never invents one.
+        builder = build_client()._build_text("🎥 #CBJ")
 
         assert builder.build_text() == "🎥 #CBJ"
         assert facet_pairs(builder) == [("#CBJ", "CBJ")]
 
-    def test_does_not_duplicate_a_team_tag_already_present(self) -> None:
-        # NBA captions end with "#CLE": appending blindly would
-        # publish "...#CLE#CLE" with two competing facets.
-        text = "🎥 Highlights\n\n#CLE"
-        builder = build_client()._build_text(text, "CLE")
-
-        assert builder.build_text() == text
-        assert facet_pairs(builder) == [("#CLE", "CLE")]
-
     def test_facets_every_hashtag_not_just_the_first(self) -> None:
-        # Quarter-end posts carry #LetEmKnow without a team tag: it
+        # Quarter-end posts carry #LetEmKnow on the header line: it
         # still needs its own facet or it renders as inert text.
-        text = "End of 1st quarter.\n\nCLE: 119 | PHI: 95\n\n#LetEmKnow"
+        text = "End of the 1st quarter. #LetEmKnow\n\nCLE: 119  |  PHI: 95"
         builder = build_client()._build_text(text)
 
         assert builder.build_text() == text
@@ -87,9 +78,9 @@ class TestTextBuilding:
     def test_facets_each_tag_in_a_multi_hashtag_post(self) -> None:
         # Team tag in the body plus the campaign tag — both tappable.
         text = "#CBJ power play goal!\n\nScoreboard\n\n#LetEmKnow"
-        builder = build_client()._build_text(text, "CBJ")
+        builder = build_client()._build_text(text)
 
-        assert builder.build_text() == text  # team tag already present
+        assert builder.build_text() == text
         assert facet_pairs(builder) == [
             ("#CBJ", "CBJ"),
             ("#LetEmKnow", "LetEmKnow"),
@@ -102,12 +93,15 @@ class TestTextBuilding:
         assert builder.build_facets() == []
 
     def test_builders_do_not_leak_state_across_calls(self) -> None:
-        # A shared builder instance would carry the previous post's
-        # text and facets into the next one.
+        # atproto's TextBuilder mutates in place, so each call starts
+        # from a clean self.text_builder — otherwise the previous
+        # post's text and facets would ride into the next one.
         client = build_client()
-        first = client._build_text("#CBJ goal!", "CBJ")
-        second = client._build_text("🎥 ", "CBJ")
+        first = client._build_text("#CBJ goal!")
+        second = client._build_text("🎥 #CBJ")
 
         assert first.build_text() == "#CBJ goal!"
         assert second.build_text() == "🎥 #CBJ"
         assert facet_pairs(second) == [("#CBJ", "CBJ")]
+        # The class property is the builder each post used.
+        assert client.text_builder is second

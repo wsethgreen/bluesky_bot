@@ -19,6 +19,7 @@ def build(**overrides) -> str:
         "away_score": 95,
         "home_leaders": HOME_LEADERS,
         "away_leaders": AWAY_LEADERS,
+        "campaign_tag": "LetEmKnow",
     }
     kwargs.update(overrides)
     return PostTextBuilder.build_quarter_end_text(**kwargs)
@@ -26,24 +27,49 @@ def build(**overrides) -> str:
 
 class TestQuarterEndHeader:
     def test_ordinal_quarter_headers(self) -> None:
-        assert build().splitlines()[0] == "End of the 1st quarter."
-        assert build(period_number=2).splitlines()[0] == "End of the 2nd quarter."
-        assert build(period_number=3).splitlines()[0] == "End of the 3rd quarter."
-        assert build(period_number=4).splitlines()[0] == "End of the 4th quarter."
+        assert build().splitlines()[0] == "End of the 1st quarter. #LetEmKnow"
+        assert build(period_number=2).splitlines()[0] == (
+            "End of the 2nd quarter. #LetEmKnow"
+        )
+        assert build(period_number=3).splitlines()[0] == (
+            "End of the 3rd quarter. #LetEmKnow"
+        )
+        assert build(period_number=4).splitlines()[0] == (
+            "End of the 4th quarter. #LetEmKnow"
+        )
 
     def test_missing_period_number(self) -> None:
-        assert build(period_number=None).splitlines()[0] == "End of quarter."
+        assert build(period_number=None).splitlines()[0] == (
+            "End of quarter. #LetEmKnow"
+        )
 
     def test_period_past_regulation_is_overtime(self) -> None:
         # Basketball's regulation is 4 quarters: a 4 stays ordinal
         # (hockey's period_label would say OT), 5+ is overtime.
-        assert build(period_number=5).splitlines()[0] == "End of overtime."
+        assert build(period_number=5).splitlines()[0] == ("End of overtime. #LetEmKnow")
+
+    def test_campaign_tag_rides_the_header_line(self) -> None:
+        # The tag sits right after the header sentence — on every
+        # variant: with leader rows, without them, and with no scores.
+        for text in (
+            build(),
+            build(home_leaders=None, away_leaders=None),
+            build(home_score=None, away_score=None),
+        ):
+            assert text.splitlines()[0].endswith(" #LetEmKnow")
+            assert not text.endswith("\n\n#LetEmKnow")
+
+    def test_no_tag_when_not_a_cavs_game(self) -> None:
+        # campaign_tag=None (non-Cavs): no tag anywhere in the text.
+        text = build(campaign_tag=None)
+        assert text.splitlines()[0] == "End of the 1st quarter."
+        assert "LetEmKnow" not in text
 
 
 class TestQuarterEndScoreboard:
     def test_full_layout(self) -> None:
         lines = build().splitlines()
-        assert lines[0] == "End of the 1st quarter."
+        assert lines[0] == "End of the 1st quarter. #LetEmKnow"
         assert lines[1] == ""
         # Plain rows (no dashed rules): four content rows wrapped in
         # a rule each ran ~370 chars, over Bluesky's 300-char cap.
@@ -53,20 +79,8 @@ class TestQuarterEndScoreboard:
         assert lines[4] == "PTS: Mitchell 23  |  Brown 20"
         assert lines[5] == "REB: Hezonja 10  |  James 7"
         assert lines[6] == "AST: Mitchell 8  |  Brown 5"
-        # The campaign tag trails as its own paragraph.
-        assert lines[7] == ""
-        assert lines[8] == "#LetEmKnow"
-        assert len(lines) == 9
-
-    def test_let_em_know_tag_always_present(self) -> None:
-        # Every quarter update carries the tag — even with no leader
-        # rows and no scores to render.
-        for text in (
-            build(),
-            build(home_leaders=None, away_leaders=None),
-            build(home_score=None, away_score=None),
-        ):
-            assert text.endswith("\n\n#LetEmKnow")
+        # The tag rides the header line — nothing trails the board.
+        assert len(lines) == 7
 
     def test_no_dashed_rule_lines(self) -> None:
         assert not any(set(line) == {"-"} for line in build().splitlines())
@@ -122,10 +136,10 @@ class TestQuarterEndScoreboard:
 
     def test_without_leaders_only_the_scoreboard_shows(self) -> None:
         lines = build(home_leaders=None, away_leaders=None).splitlines()
-        # header, blank, score, blank, tag.
-        assert len(lines) == 5
+        # header (tag included), blank, score.
+        assert len(lines) == 3
+        assert lines[0] == "End of the 1st quarter. #LetEmKnow"
         assert lines[2] == "CLE: 119  |  PHI: 95"
-        assert lines[4] == "#LetEmKnow"
 
     def test_missing_scores_render_dash(self) -> None:
         lines = build(
@@ -146,7 +160,7 @@ class TestQuarterEndScoreboard:
     def test_all_empty_leader_cells_drop_the_rows(self) -> None:
         empty = {"PTS": None, "REB": None, "AST": None}
         lines = build(home_leaders=empty, away_leaders=empty).splitlines()
-        assert len(lines) == 5
+        assert len(lines) == 3
         assert lines[2] == "CLE: 119  |  PHI: 95"
 
     def test_partial_leader_keys_from_one_side_only(self) -> None:
@@ -162,14 +176,14 @@ class TestQuarterEndContextSentence:
         text = build(**NAMES, tracked_score=29, opponent_score=33)
         assert text.splitlines()[0] == (
             "End of the 1st quarter. The Cleveland Cavaliers trail"
-            " the New York Knicks by 4."
+            " the New York Knicks by 4. #LetEmKnow"
         )
 
     def test_lead_sentence_when_ahead(self) -> None:
         text = build(**NAMES, tracked_score=33, opponent_score=29)
         assert text.splitlines()[0] == (
             "End of the 1st quarter. The Cleveland Cavaliers lead"
-            " the New York Knicks by 4."
+            " the New York Knicks by 4. #LetEmKnow"
         )
 
     def test_tie_sentence(self) -> None:
@@ -177,7 +191,7 @@ class TestQuarterEndContextSentence:
         text = build(**NAMES, tracked_score=55, opponent_score=55)
         assert text.splitlines()[0] == (
             "End of the 1st quarter. The Cleveland Cavaliers and"
-            " the New York Knicks are tied at 55-55."
+            " the New York Knicks are tied at 55-55. #LetEmKnow"
         )
 
     def test_missing_opponent_name_gets_no_sentence(self) -> None:
@@ -186,16 +200,17 @@ class TestQuarterEndContextSentence:
             tracked_score=29,
             opponent_score=33,
         )
-        assert text.splitlines()[0] == "End of the 1st quarter."
+        assert text.splitlines()[0] == "End of the 1st quarter. #LetEmKnow"
 
     def test_missing_scores_get_no_sentence(self) -> None:
         text = build(**NAMES, tracked_score=None, opponent_score=None)
-        assert text.splitlines()[0] == "End of the 1st quarter."
+        assert text.splitlines()[0] == "End of the 1st quarter. #LetEmKnow"
 
     def test_sentence_appends_to_overtime_header(self) -> None:
         text = build(period_number=5, **NAMES, tracked_score=115, opponent_score=110)
         assert text.splitlines()[0] == (
-            "End of overtime. The Cleveland Cavaliers lead the New York Knicks by 5."
+            "End of overtime. The Cleveland Cavaliers lead the New"
+            " York Knicks by 5. #LetEmKnow"
         )
 
     def test_opponent_article_is_not_doubled(self) -> None:
@@ -207,7 +222,8 @@ class TestQuarterEndContextSentence:
             opponent_score=29,
         )
         assert text.splitlines()[0] == (
-            "End of the 1st quarter. The Cleveland Cavaliers lead The Knicks by 4."
+            "End of the 1st quarter. The Cleveland Cavaliers lead"
+            " The Knicks by 4. #LetEmKnow"
         )
 
 
@@ -223,7 +239,7 @@ class TestQuarterEndFinalHeader:
         )
         assert text.splitlines()[0] == (
             "Cleveland Cavaliers win! The Cleveland Cavaliers defeat"
-            " the New York Knicks 115-107."
+            " the New York Knicks 115-107. #LetEmKnow"
         )
 
     def test_lose_header(self) -> None:
@@ -235,7 +251,7 @@ class TestQuarterEndFinalHeader:
         )
         assert text.splitlines()[0] == (
             "Cleveland Cavaliers lose. The Cleveland Cavaliers fall to"
-            " the New York Knicks 107-115."
+            " the New York Knicks 107-115. #LetEmKnow"
         )
 
     def test_result_sentence_skipped_without_opponent_name(self) -> None:
@@ -245,7 +261,7 @@ class TestQuarterEndFinalHeader:
             tracked_score=115,
             opponent_score=107,
         )
-        assert text.splitlines()[0] == "Cleveland Cavaliers win!"
+        assert text.splitlines()[0] == "Cleveland Cavaliers win! #LetEmKnow"
 
     def test_tie_falls_back_to_plain_header(self) -> None:
         # A tie can't claim a result — the end-of-quarter line stands
@@ -256,21 +272,21 @@ class TestQuarterEndFinalHeader:
             tracked_score=110,
             opponent_score=110,
         )
-        assert text.splitlines()[0] == "End of the 1st quarter."
+        assert text.splitlines()[0] == "End of the 1st quarter. #LetEmKnow"
 
     def test_final_tie_announces_tie_not_result(self) -> None:
         # Result needs a winner; a level final keeps the tie line.
         text = build(is_final=True, tracked_score=110, opponent_score=110, **NAMES)
         assert text.splitlines()[0] == (
             "End of the 1st quarter. The Cleveland Cavaliers and"
-            " the New York Knicks are tied at 110-110."
+            " the New York Knicks are tied at 110-110. #LetEmKnow"
         )
 
     def test_missing_name_or_scores_fall_back(self) -> None:
         no_name = build(is_final=True, tracked_score=115, opponent_score=107)
-        assert no_name.splitlines()[0] == "End of the 1st quarter."
+        assert no_name.splitlines()[0] == "End of the 1st quarter. #LetEmKnow"
         no_scores = build(is_final=True, tracked_full_name="Cleveland Cavaliers")
-        assert no_scores.splitlines()[0] == "End of the 1st quarter."
+        assert no_scores.splitlines()[0] == "End of the 1st quarter. #LetEmKnow"
 
     def test_not_final_keeps_plain_header(self) -> None:
         # Name + scores alone never announce a result mid-game — the
@@ -281,7 +297,7 @@ class TestQuarterEndFinalHeader:
             tracked_score=115,
             opponent_score=107,
         )
-        assert text.splitlines()[0] == "End of the 1st quarter."
+        assert text.splitlines()[0] == "End of the 1st quarter. #LetEmKnow"
 
     def test_final_ot_period_announces_result_not_overtime(self) -> None:
         # The deciding period may be an OT period: the result header
@@ -293,4 +309,4 @@ class TestQuarterEndFinalHeader:
             tracked_score=115,
             opponent_score=107,
         )
-        assert text.splitlines()[0] == "Cleveland Cavaliers win!"
+        assert text.splitlines()[0] == "Cleveland Cavaliers win! #LetEmKnow"

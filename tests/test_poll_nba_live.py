@@ -621,19 +621,18 @@ class TestQuarterPostFromSummary:
             away_score=score_through(away, 1),
             home_leaders=leader_cells(team_leaders(summary, "CLE")),
             away_leaders=leader_cells(team_leaders(summary, "PHI")),
+            campaign_tag="LetEmKnow",
         )
         lines = text.splitlines()
-        assert lines[0] == "End of the 1st quarter."
+        assert lines[0] == "End of the 1st quarter. #LetEmKnow"
         assert lines[2] == "CLE: 33  |  PHI: 22"
         # Blank line: the score row stands alone above the leaders.
         assert lines[3] == ""
         assert lines[4] == "PTS: Donovan Mitchell 23  |  Jaylen Brown 20"
         assert lines[5] == "REB: Mario Hezonja 10  |  LeBron James 7"
         assert lines[6] == "AST: Donovan Mitchell 8  |  Jaylen Brown 5"
-        # The campaign tag trails as its own paragraph.
-        assert lines[7] == ""
-        assert lines[8] == "#LetEmKnow"
-        assert len(lines) == 9
+        # The tag rides the header line — nothing trails the board.
+        assert len(lines) == 7
 
     def test_final_quarter_uses_final_buzzer_scores(self) -> None:
         summary = NbaSummaryResponse.model_validate(make_summary_payload())
@@ -721,15 +720,32 @@ class TestQueueQuarterEnds:
         # Q1-Q3 keep the plain line — now with the context sentence
         # (Q1: CLE 33, PHI 22 → lead by 11); only the deciding
         # quarter announces the tracked team's result, with the
-        # same-line score sentence naming the opponent.
+        # same-line score sentence naming the opponent. The campaign
+        # tag rides every header line.
         assert texts[0].splitlines()[0] == (
-            "End of the 1st quarter. The City CLE lead the City PHI by 11."
+            "End of the 1st quarter. The City CLE lead the City PHI by 11. #LetEmKnow"
         )
         assert texts[3].splitlines()[0] == (
-            "City CLE win! The City CLE defeat the City PHI 119-95."
+            "City CLE win! The City CLE defeat the City PHI 119-95. #LetEmKnow"
         )
         assert texts[3].splitlines()[2].startswith("CLE: 119")
-        assert texts[3].endswith("\n\n#LetEmKnow")
+        assert texts[3].splitlines()[0].endswith(" #LetEmKnow")
+
+    def test_no_campaign_tag_for_non_cavs_team(self) -> None:
+        # #LetEmKnow is the Cavs tag: another team's game gets the
+        # same text shape with no tag at all.
+        worker = self.make_worker()
+        worker._team = "BOS"
+        session = FakeSession()
+        event = parse(make_event(state="post", away_abbrev="PHI"))[0]
+
+        asyncio.run(worker._queue_quarter_ends(session, 401909289, event, [1]))
+
+        text = claim_params(session)[0]["text"]
+        assert text.splitlines()[0] == (
+            "End of the 1st quarter. The City BOS lead the City PHI by 11."
+        )
+        assert "LetEmKnow" not in text
 
     def test_deciding_quarter_stays_plain_while_not_final(self) -> None:
         # completed=[1..4] while the game is still open (LIVE into
@@ -747,7 +763,7 @@ class TestQueueQuarterEnds:
         # Plain header (no result) — the context sentence still names
         # the margin: CLE 119, PHI 95 through Q4.
         assert texts[3].splitlines()[0] == (
-            "End of the 4th quarter. The City CLE lead the City PHI by 24."
+            "End of the 4th quarter. The City CLE lead the City PHI by 24. #LetEmKnow"
         )
 
     def test_already_claimed_quarters_are_not_requeued(self) -> None:

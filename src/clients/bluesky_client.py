@@ -32,33 +32,33 @@ class BlueskyClient:
         self._username = account_handle
         self._password = account_password
         self.client = AsyncClient()
+        self.text_builder = client_utils.TextBuilder()
 
     async def _login(self) -> None:
         logger.info("logging into bsky as %s", self._username)
         await self.client.login(self._username, self._password)
 
-    def _build_text(
-        self, text: str, tag: str | None = None
-    ) -> client_utils.TextBuilder:
+    def _build_text(self, text: str) -> client_utils.TextBuilder:
         """Rich text with a facet on every hashtag in ``text``.
 
         Bluesky only makes a hashtag tappable when a facet covers it,
         so every ``#word`` gets its own facet — not just the first one
-        (a ``#CBJ ...`` header plus a trailing ``#LetEmKnow`` would
-        otherwise leave the second tag inert).
+        (a ``#CBJ ...`` header plus ``#LetEmKnow`` would otherwise
+        leave the second tag inert).
 
-        ``tag`` is the poster's team: appended when the text does not
-        already contain it as a hashtag. The NHL video caption is just
-        the camera emoji and relies on this append, while NBA captions
-        already carry ``#CLE`` — appending blindly would publish
-        ``#CLE#CLE``.
+        The post formats carry their own hashtags in the body — goal
+        headers (``#CBJ power play goal!``), video captions
+        (``🎥 #CBJ``, ``... #CLE``), quarter boards ending their first
+        line with ``#LetEmKnow`` — so the builder only facets what's
+        there; it never invents a tag.
 
-        A fresh builder per call: a shared instance would leak the
-        previous post's text and facets into the next one.
+        atproto's ``TextBuilder`` mutates in place (its buffer and
+        facet list accumulate), so each post starts from a clean
+        ``self.text_builder`` — a reused instance would carry the
+        previous post's text into the next one.
         """
-        if tag is not None and not re.search(rf"(?<!\w)#{re.escape(tag)}(?!\w)", text):
-            text = f"{text}#{tag}"
-        builder = client_utils.TextBuilder()
+        self.text_builder = client_utils.TextBuilder()
+        builder = self.text_builder
         position = 0
         for match in _HASHTAG_RE.finditer(text):
             if match.start() > position:
@@ -106,7 +106,7 @@ class BlueskyClient:
             len(video),
             " quoting " + quote.uri if quote else "",
         )
-        built_text = self._build_text(text, tag)
+        built_text = self._build_text(text)
         if quote is None:
             resp = await self.client.send_video(
                 text=built_text, video=video, video_alt=alt

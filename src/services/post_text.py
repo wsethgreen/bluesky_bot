@@ -321,20 +321,19 @@ class PostTextBuilder:
         opponent_full_name: str | None = None,
         tracked_score: int | None = None,
         opponent_score: int | None = None,
+        campaign_tag: str | None = None,
     ) -> str:
         """Build the Bluesky post text for the end of a basketball quarter.
 
         Format (mid-game, tracked team behind):
 
-            End of the 1st quarter. The Cleveland Cavaliers trail the New York Knicks by 4.
+            End of the 1st quarter. The Cleveland Cavaliers trail the New York Knicks by 4. #LetEmKnow
 
             NY: 33  |  CLE: 29
 
             PTS: Brunson 27  |  Harden 32
             REB: Towns 11  |  Allen 14
             AST: Towns 8  |  Mitchell 6
-
-            #LetEmKnow
 
         The score row stands alone: a blank line separates it from the
         leader rows so the final score never runs into PTS.
@@ -371,9 +370,11 @@ class PostTextBuilder:
         OT). Ordinal quarters read "End of the 1st quarter." (the
         "the" included).
 
-        ``#LetEmKnow`` trails as its own paragraph — the team's
-        campaign tag on every quarter update. The poster facets every
-        hashtag in the text, so it renders tappable.
+        ``campaign_tag`` rides the end of the header line — the
+        sentence ends with the tag ("... by 4. #LetEmKnow") — and is
+        ``None`` for non-Cavs games, which then carry no tag at all.
+        The text owns its own hashtags; the poster only facets what's
+        in it, so it renders tappable.
 
         No dashed rules, unlike hockey's :meth:`scoreboard_lines`:
         four content rows wrapped in a rule each ran ~370 characters,
@@ -444,6 +445,12 @@ class PostTextBuilder:
                         f" {_article(opponent_full_name)} by {margin}."
                     )
 
+        # The campaign tag rides the header line, right where the
+        # sentence ends — the text owns its hashtags (the poster only
+        # facets what's there). ``None`` = not a Cavs game.
+        if campaign_tag:
+            header += f" #{campaign_tag}"
+
         # (left label, left value, right label | None, right value);
         # the score row names both sides, leader rows label only left.
         rows: list[tuple[str, str, str | None, str]] = [
@@ -483,7 +490,6 @@ class PostTextBuilder:
         parts = [header, score_row]
         if leader_rows:
             parts.append("\n".join(leader_rows))
-        parts.append("#LetEmKnow")
         return "\n\n".join(parts)
 
     @staticmethod
@@ -574,11 +580,12 @@ class PostTextBuilder:
         return "\n\n".join([f"{headline}\n{detail}", "\n".join(scoreboard)])
 
     @staticmethod
-    def build_highlight_video_caption() -> str:
+    def build_highlight_video_caption(team_abbrev: str) -> str:
         """Caption for the standalone highlight video post.
 
         Deliberately minimal: the goal details live on the (quoted) text
-        post, so the video post only carries the camera emoji — the team
-        hashtag is appended by the poster.
+        post, so the video post only carries the camera emoji plus the
+        team hashtag — written into the text here, where the poster
+        facets it.
         """
-        return "🎥 "
+        return f"🎥 #{team_abbrev}"
