@@ -157,16 +157,32 @@ NBA_LEADER_LABELS: tuple[tuple[str, str], ...] = (
 )
 
 
-def completed_quarters(state: str | None, period: int | None) -> list[int]:
+def completed_quarters(
+    state: str | None, period: int | None, clock: float | None = None
+) -> list[int]:
     """Quarter numbers whose buzzer has sounded (1-based), ascending.
 
     ``FINAL`` means every period the feed counted has ended — the
     period is the clock's final count (4 for regulation, 5+ with OT;
     a missing count falls back to basketball's 4-quarter regulation).
-    ``LIVE`` means only periods strictly below the current one have
-    ended (period 1 → none yet). Anything else (FUTURE, the settled-
-    but-unplayed states, an unknown/absent period) can't claim a
-    completed quarter.
+    ``LIVE`` means periods strictly below the current one have ended
+    (period 1 → none yet) — plus, when the feed's clock reads
+    ``0:00``, the current period itself: ESPN holds ``period`` at the
+    just-ended quarter through the whole break (halftime reports
+    ``state=in, detail=Halftime, clock=0, period=2``), so the clock,
+    not the period increment, is the buzzer. Gating on the increment
+    alone queued each post at the next tip instead: the halftime post
+    waited out the entire break for Q3 to start.
+
+    The clock shortcut stops below period 4: a ``0:00`` on period 4
+    or an OT period can mean the game is *over*, and the deciding
+    quarter must be claimed on the FINAL path — that claim attaches
+    the result header, while a LIVE claim would freeze the plain
+    header under the dedup key forever. FINAL follows the last buzzer
+    within a poll or two, so nothing is delayed there.
+
+    Anything else (FUTURE, the settled-but-unplayed states, an
+    unknown/absent period or clock) can't claim a completed quarter.
 
     Pure so the queueing gate is unit-testable; the caller pairs it
     with the row's post-apply state and the scoreboard's period.
@@ -174,7 +190,10 @@ def completed_quarters(state: str | None, period: int | None) -> list[int]:
     if state == "FINAL":
         return list(range(1, (period or 4) + 1))
     if state == "LIVE" and period is not None and period >= 1:
-        return list(range(1, period))
+        completed = list(range(1, period))
+        if period < 4 and clock is not None and clock <= 0:
+            completed.append(period)
+        return completed
     return []
 
 
@@ -413,7 +432,11 @@ class NbaPollWorker:
             session,
             row.game_id,
             game,
-            completed_quarters(row.game_state, status.period if status else None),
+            completed_quarters(
+                row.game_state,
+                status.period if status else None,
+                status.clock if status else None,
+            ),
             final=row.game_state == "FINAL",
         )
         video_queued = await self._queue_post_game_videos(
@@ -497,7 +520,11 @@ class NbaPollWorker:
             session,
             row.game_id,
             game,
-            completed_quarters(row.game_state, status.period if status else None),
+            completed_quarters(
+                row.game_state,
+                status.period if status else None,
+                status.clock if status else None,
+            ),
             final=row.game_state == "FINAL",
         )
         video_queued = await self._queue_post_game_videos(
@@ -534,7 +561,9 @@ class NbaPollWorker:
         claim time: scores come from the summary's per-quarter
         linescores summed through that quarter (a Q1 post caught mid-Q2
         still shows the Q1 buzzer score, not the live total), leaders
-        from ESPN's per-team game leaders as of this fetch.
+        from ESPN's per-team game leaders as of this fetch. A quarter
+        the summary hasn't scored yet is left unclaimed for the next
+        poll rather than frozen with a "-".
 
         When ``final`` (the game is over), the deciding quarter — the
         last one whose buzzer sounded (Q4, or the OT period) — gets
@@ -598,6 +627,18 @@ class NbaPollWorker:
         for quarter in missing:
             home_score = score_through(home_lines, quarter)
             away_score = score_through(away_lines, quarter)
+            if home_score is None or away_score is None:
+                # The summary hasn't recorded this quarter's score
+                # yet — a buzzer poll can beat the linescore update.
+                # Claiming would freeze a "-" the dedup key could
+                # never re-claim, so leave it for the next poll.
+                logger.info(
+                    "poll(nba): quarter %s score not in summary yet, "
+                    "deferring claim (game %s)",
+                    quarter,
+                    game_id,
+                )
+                continue
             tracked_score = home_score if tracked_at_home else away_score
             opponent_score = away_score if tracked_at_home else home_score
             text = PostTextBuilder.build_quarter_end_text(

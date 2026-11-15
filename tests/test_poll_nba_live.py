@@ -53,8 +53,15 @@ def make_event(
     home_score: str | None = None,
     season_year: int = 2027,
     season_slug: str = "regular-season",
+    period: int | None = None,
+    clock: float = 0.0,
 ) -> dict:
-    """One real-shaped ESPN scoreboard event."""
+    """One real-shaped ESPN scoreboard event.
+
+    ``period``/``clock`` shape the status the quarter-end gate reads:
+    default to the historical fixture (0, except 4 once final), while
+    e.g. ``state="in", period=2, clock=0`` is ESPN's halftime report.
+    """
 
     def competitor(home_away: str, abbrev: str, team_id: int, score: str | None):
         entry = {
@@ -70,6 +77,7 @@ def make_event(
             entry["score"] = score
         return entry
 
+    status_period = period if period is not None else (4 if state == "post" else 0)
     return {
         "id": str(event_id),
         "date": date,
@@ -77,9 +85,9 @@ def make_event(
         "shortName": f"{away_abbrev} @ {home_abbrev}",
         "season": {"year": season_year, "type": 2, "slug": season_slug},
         "status": {
-            "clock": 0.0,
+            "clock": clock,
             "displayClock": "0:00",
-            "period": 0,
+            "period": status_period,
             "type": {
                 "name": "STATUS_SCHEDULED",
                 "state": state,
@@ -98,9 +106,9 @@ def make_event(
                     competitor("home", home_abbrev, home_id, home_score),
                 ],
                 "status": {
-                    "clock": 0.0,
+                    "clock": clock,
                     "displayClock": "0:00",
-                    "period": 4 if state == "post" else 0,
+                    "period": status_period,
                     "type": {
                         "name": "STATUS_FINAL"
                         if state == "post"
@@ -186,6 +194,18 @@ class TestScoreboardParsing:
         assert game.game_status is not None
         assert game.game_status.type is not None
         assert game.game_status.type.state == "in"
+
+    def test_halftime_status_feeds_the_buzzer_gate(self) -> None:
+        # ESPN's real halftime report: state still "in", period still
+        # 2 (the quarter that just ended), clock at 0 — exactly the
+        # shape the quarter-end gate reads as "Q2's buzzer sounded".
+        event = make_event(state="in", detail="Halftime", period=2, clock=0)
+        (game,) = parse(event)
+        status = game.game_status
+        assert status is not None
+        assert status.period == 2
+        assert status.clock == 0
+        assert completed_quarters("LIVE", status.period, status.clock) == [1, 2]
 
     def test_empty_scoreboard_has_no_events(self) -> None:
         payload = NbaScoreboardResponse.model_validate({})
@@ -383,6 +403,32 @@ class TestCompletedQuarters:
     def test_live_counts_only_the_finished_quarters(self) -> None:
         assert completed_quarters("LIVE", 3) == [1, 2]
         assert completed_quarters("LIVE", 1) == []  # Q1 still running
+
+    def test_live_buzzer_comes_from_the_clock_not_the_period(self) -> None:
+        # ESPN holds period at the just-ended quarter through the
+        # whole break (halftime: state=in, clock=0, period=2), so a
+        # 0:00 clock is the buzzer — the post fires at halftime, not
+        # when Q3 tips.
+        assert completed_quarters("LIVE", 1, clock=0) == [1]
+        assert completed_quarters("LIVE", 2, clock=0.0) == [1, 2]
+        assert completed_quarters("LIVE", 3, clock=0) == [1, 2, 3]
+
+    def test_live_running_clock_claims_only_the_past_quarters(self) -> None:
+        assert completed_quarters("LIVE", 3, clock=32.3) == [1, 2]
+        assert completed_quarters("LIVE", 1, clock=720) == []
+
+    def test_live_buzzer_never_claims_the_deciding_period(self) -> None:
+        # A 0:00 on period 4 or an OT period can mean the game is
+        # over: the deciding quarter must wait for FINAL, whose claim
+        # attaches the result header — a LIVE claim would freeze the
+        # plain header under the dedup key forever.
+        assert completed_quarters("LIVE", 4, clock=0) == [1, 2, 3]
+        assert completed_quarters("LIVE", 5, clock=0) == [1, 2, 3, 4]
+
+    def test_buzzer_gate_ignores_unplayed_states(self) -> None:
+        assert completed_quarters("FUTURE", 2, clock=0) == []
+        assert completed_quarters(None, 2, clock=0) == []
+        assert completed_quarters("LIVE", 0, clock=0) == []
 
     def test_live_without_a_usable_period_claims_nothing(self) -> None:
         assert completed_quarters("LIVE", None) == []
@@ -686,10 +732,11 @@ class TestQueueQuarterEnds:
     """_queue_quarter_ends: dedup, and the game-over result header."""
 
     @staticmethod
-    def make_worker() -> NbaPollWorker:
+    def make_worker(summary: NbaSummaryResponse | None = None) -> NbaPollWorker:
         # Bypass __init__: it builds real API clients from settings;
         # the queue path only needs the summary stub and the team.
-        summary = NbaSummaryResponse.model_validate(make_summary_payload())
+        if summary is None:
+            summary = NbaSummaryResponse.model_validate(make_summary_payload())
 
         async def get_summary(game_id: int):
             return summary
@@ -780,6 +827,29 @@ class TestQueueQuarterEnds:
         texts = [p["text"] for p in claim_params(session)]
         assert len(texts) == 1
         assert texts[0].startswith("City CLE win!")
+
+    def test_unscored_quarter_defers_to_the_next_poll(self) -> None:
+        # The buzzer poll can beat the summary's linescore update:
+        # claiming Q2 now would freeze a "-" the dedup key could never
+        # re-claim, so Q1 claims and Q2 waits for the next poll.
+        payload = make_summary_payload()
+        for side in payload["header"]["competitions"][0]["competitors"]:
+            side["linescores"] = side["linescores"][:1]
+        worker = self.make_worker(NbaSummaryResponse.model_validate(payload))
+        session = FakeSession()
+
+        claimed = asyncio.run(
+            worker._queue_quarter_ends(
+                session, 401909289, self.final_event(), [1, 2], final=False
+            )
+        )
+
+        assert claimed == 1
+        texts = [p["text"] for p in claim_params(session)]
+        assert len(texts) == 1
+        assert texts[0].splitlines()[0] == (
+            "End of the 1st quarter. The City CLE lead the City PHI by 11. #LetEmKnow"
+        )
 
 
 class _RecordingHttp:
