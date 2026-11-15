@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -92,26 +92,49 @@ class PostsRepo:
         )
         return list(result.scalars().all())
 
+    async def list_defunct(self, limit: int = 25) -> list[Post]:
+        """Rows the poster gave up on, newest first (manual-recovery view).
+
+        ``defunct`` is permanent until an operator clears it, so these
+        never come back on their own — they are the one part of the
+        queue that needs a human. Newest first so the give-up that just
+        fired is the first line printed.
+        """
+        result = await self.session.execute(
+            select(Post)
+            .where(Post.posted.is_(False))
+            .where(Post.defunct.is_(True))
+            .order_by(Post.created_at.desc(), Post.id.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
     async def claim_pending_batch(
         self, limit: int = 10, *, window_hours: int, force: bool = False
     ) -> list[Post]:
         """Lock the oldest claimable unposted, non-defunct rows for this consumer.
 
-        Skips rows already marked ``defunct`` or that have exhausted
-        ``MAX_ATTEMPTS`` retries. ``FOR UPDATE OF posts SKIP LOCKED`` so
-        competing poster consumers never grab the same row — only the
-        ``posts`` row is locked, never the joined ``games`` row (the
-        transaction stays open across the video download, and the
-        poller upserts ``games`` every cycle). The ``created_at, id``
-        order (text rows are claimed before a goal's video row) is what
-        makes the goal text post go out before its highlight video.
+        Skips rows already marked ``defunct`` and rows still waiting out
+        their retry backoff (``next_attempt_at`` in the future, set by
+        the poster when an attempt fails). Both filters run SQL-side so
+        a row waiting on either is simply not selected — it can never
+        head-of-line block the newer rows behind it in the queue.
+        ``FOR UPDATE OF posts SKIP LOCKED`` so competing poster
+        consumers never grab the same row — only the ``posts`` row is
+        locked, never the joined ``games`` row (the transaction stays
+        open across the video download, and the poller upserts
+        ``games`` every cycle). The ``created_at, id`` order (text rows
+        are claimed before a goal's video row) is what makes the goal
+        text post go out before its highlight video.
 
         Unless ``force``, a row is only claimable while its game's
         start time sits inside ``[now - window_hours, now]`` — its
-        posting window (pre-game rows wait for kickoff too). Stale rows
-        awaiting a ``--force`` backfill are therefore never locked, so
-        they cannot block newer in-window rows behind them in the
-        queue.
+        posting window (pre-game rows wait for kickoff too) — and only
+        once its backoff has elapsed. Stale rows awaiting a ``--force``
+        backfill are therefore never locked, so they cannot block newer
+        in-window rows behind them in the queue; ``force`` skips both
+        the window and the backoff, which is what makes it the way to
+        retry a just-failed row immediately.
 
         Callers must commit (or roll back) to release.
         """
@@ -123,6 +146,12 @@ class PostsRepo:
         )
         if not force:
             now = datetime.now(UTC)
+            # A failed row waits out its backoff before it may be
+            # claimed again; NULL means it has never failed (or was
+            # recovered by hand).
+            stmt = stmt.where(
+                or_(Post.next_attempt_at.is_(None), Post.next_attempt_at <= now)
+            )
             # start <= now <= start + window_hours, rewritten as a
             # pure timestamp range to avoid interval arithmetic.
             stmt = stmt.join(Game, Game.game_id == Post.game_id).where(
@@ -136,11 +165,12 @@ class PostsRepo:
         return list(result.scalars().all())
 
     async def count_pending(self) -> int:
-        """Unposted, non-defunct rows still eligible to be claimed.
+        """Unposted, non-defunct rows not yet given up on.
 
-        Counts regardless of window, so callers can tell "queue empty"
-        apart from "rows waiting outside their window" (which only a
-        ``--force`` run will drain).
+        Counts regardless of window and retry backoff, so callers can
+        tell "queue empty" apart from "rows waiting to be claimable"
+        (outside their window, or spacing out failed attempts — which
+        only a ``--force`` run will drain early).
         """
         result = await self.session.execute(
             select(func.count())

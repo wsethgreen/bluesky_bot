@@ -3,10 +3,10 @@
 Runs every minute on game days. Claims the oldest ``posted=False`` row
 whose game is inside its posting window (``[now - window_hours, now]``
 on ``Game.start_time``) with ``FOR UPDATE SKIP LOCKED`` — rows outside
-the window are never locked, so a stale row awaiting ``--force`` cannot
-head-of-line block newer in-window posts behind it. Text rows (goal
-announcements, end-of-period scoreboards, and penalty updates) go out
-immediately.
+the window, or waiting out a retry backoff, are never locked, so a
+stale row awaiting ``--force`` cannot head-of-line block newer
+in-window posts behind it. Text rows (goal announcements,
+end-of-period scoreboards, and penalty updates) go out immediately.
 Video rows resolve a direct MP4 URL for the owning game's league
 (``_resolver_for``: Brightcove for the NHL, the claim-time content-feed
 URL for the NBA), download it, and post it with the short caption —
@@ -17,8 +17,10 @@ Every row publishes from its league's own Bluesky account
 the NBA), so the two bots never cross-post.
 Rows are claimed oldest-first and a goal's text row always precedes its
 video row, so the quote is normally available by the time the video
-posts. Any failure leaves the row unposted so it is retried on the next
-run.
+posts. Any failure leaves the row unposted and schedules the next
+attempt with an exponential backoff (:func:`retry_delay`), so a
+transient upstream error has time to clear; after ``MAX_ATTEMPTS``
+failures the row is marked ``defunct`` and never retried on its own.
 
 When ``env == "local"`` nothing is sent to Bluesky: the post's content
 (text, or caption + highlight URL) is logged instead, and the row is
@@ -33,6 +35,8 @@ import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
+
+import httpx2
 
 from clients.bluesky_client import BlueskyClient
 from clients.http_client import HttpClient
@@ -59,8 +63,9 @@ async def post_pending(ctx: WorkerContext, *, force: bool = False) -> str:
 
     ``force`` (manual runner only) bypasses the posting window
     (``settings.poster.window_hours``) entirely — both the claim's
-    window filter and the inline re-check below — so late posts from a
-    finished game can still go out.
+    window filter and the inline re-check below — and the retry
+    backoff on a previously failed row, so late posts from a finished
+    game (or one that just failed an attempt) can still go out.
 
     ``ctx.settings.env == "local"`` logs the post instead of publishing
     it (see module docstring); without ``force`` the window still
@@ -83,8 +88,9 @@ async def post_pending(ctx: WorkerContext, *, force: bool = False) -> str:
             waiting = await posts.count_pending()
             if waiting:
                 return (
-                    f"no pending posts in window "
-                    f"({waiting} outside it; --force drains them)"
+                    f"no claimable posts ({waiting} pending — outside "
+                    f"the window or waiting out a retry backoff; "
+                    f"--force drains them)"
                 )
             return "no pending posts"
 
@@ -165,7 +171,10 @@ async def post_pending(ctx: WorkerContext, *, force: bool = False) -> str:
             await session.rollback()
             logger.exception("failed to post %s", label)
 
-            # Record the failed attempt; give up after MAX_ATTEMPTS.
+            # Record the failed attempt and schedule the next one:
+            # ``retry_decision`` spaces the attempts out (see
+            # ``retry_delay``) so a transient upstream error has time
+            # to clear, and gives up once MAX_ATTEMPTS is reached.
             # Re-read the row through the session: the rollback expired
             # the old instance, and ``await``-ing the get runs its
             # refresh inside the greenlet (reading the stale instance's
@@ -175,10 +184,28 @@ async def post_pending(ctx: WorkerContext, *, force: bool = False) -> str:
                 return f"{label}: post row disappeared after rollback"
             post.attempts = (post.attempts or 0) + 1
             post.last_error = f"{type(exc).__name__}: {exc}"
-            if post.attempts >= MAX_ATTEMPTS:
-                post.defunct = True
+            defunct, next_attempt_at = retry_decision(post.attempts, datetime.now(UTC))
+            post.defunct = defunct
+            post.next_attempt_at = next_attempt_at
             await session.commit()
-            return f"{label}: post failed (attempt {post.attempts})"
+
+            if next_attempt_at is None:
+                # The one failure a human has to act on: nothing
+                # retries this row any more, so make the give-up loud
+                # here (grep-able WARNING) and in
+                # ``workers.manual status``.
+                logger.warning(
+                    "giving up on %s after %d attempts — marked "
+                    "defunct, it will not be retried; last error: %s",
+                    label,
+                    post.attempts,
+                    post.last_error,
+                )
+                return f"{label}: gave up after {post.attempts} attempts (defunct)"
+            return (
+                f"{label}: post failed (attempt {post.attempts}; next try "
+                f"{next_attempt_at.isoformat(timespec='seconds')})"
+            )
 
 
 def _window_skip_reason(
@@ -206,22 +233,86 @@ def _window_skip_reason(
     return None
 
 
+# Retry schedule for a failed post: the next attempt waits
+# RETRY_BASE_DELAY, doubling per failure (3, 6, 12, 24 minutes across
+# the four retries before MAX_ATTEMPTS gives up), so the give-up lands
+# ~45 minutes after the first failure instead of the ~4 minutes it took
+# when every failed run retried on the very next one. RETRY_MAX_DELAY
+# caps the gap so raising MAX_ATTEMPTS cannot spin it out to hours.
+RETRY_BASE_DELAY = timedelta(minutes=3)
+RETRY_MAX_DELAY = timedelta(minutes=60)
+
+
+def retry_delay(attempts: int) -> timedelta:
+    """How long a post that failed ``attempts`` times waits before retrying.
+
+    ``attempts`` is 1-based (the caller counts the failure before
+    asking), so the delays double 3 → 6 → 12 → 24 minutes and sum to
+    45 minutes over ``MAX_ATTEMPTS``.
+    """
+    if attempts < 1:
+        raise ValueError(f"attempts must be >= 1, got {attempts!r}")
+    return min(RETRY_BASE_DELAY * (2 ** (attempts - 1)), RETRY_MAX_DELAY)
+
+
+def retry_decision(attempts: int, now: datetime) -> tuple[bool, datetime | None]:
+    """``(defunct, next_attempt_at)`` after a post's ``attempts``-th failure.
+
+    The give-up rule is unchanged — ``attempts >= MAX_ATTEMPTS`` marks
+    the row ``defunct`` — but every failure now also schedules the next
+    attempt with :func:`retry_delay`, which is what gives a transient
+    upstream error time to clear. A Brightcove 403 on a clip whose
+    playback policy has not propagated yet used to consume all five
+    attempts in four minutes; with the backoff the same clip gets
+    ~45 minutes.
+
+    Pure (``now`` is passed in) so the schedule is unit-testable the
+    same way as ``_window_skip_reason``.
+    """
+    if attempts >= MAX_ATTEMPTS:
+        return True, None
+    return False, now + retry_delay(attempts)
+
+
 # A video resolver turns a pending video row into a direct-download MP4
 # URL, or None when no playable rendition is available yet (retry next
 # run). Keyed by ``Game.league``.
 VideoResolver = Callable[["WorkerContext", "Post"], Awaitable[str | None]]
 
 
+# Brightcove statuses that mean "not ready yet" rather than "wrong": a
+# freshly uploaded clip's playback policy can take a few minutes to
+# propagate, and until it does the API answers 403 even for a valid
+# policy key (404 the same way while the clip is not visible yet). Both
+# clear on their own, so they behave like a missing rendition and retry
+# without consuming an attempt. Every other status (401, 5xx) is a real
+# failure and still counts toward MAX_ATTEMPTS.
+_NOT_READY_STATUS_CODES = frozenset({403, 404})
+
+
 async def _nhl_mp4_url(ctx: WorkerContext, post: Post) -> str | None:
     """Brightcove rendition lookup: an NHL ``clip_id`` is a Brightcove video id.
 
-    Returns None when the video has no MP4 rendition (nothing to post
-    this run, no attempt recorded); raises when the row is malformed so
-    the attempt is counted toward ``MAX_ATTEMPTS``.
+    Returns None when nothing can be posted this run and no attempt
+    should be recorded: the video has no MP4 rendition yet, or
+    Brightcove answered one of ``_NOT_READY_STATUS_CODES``. Raises when
+    the row is malformed (no ``clip_id``) or on any other status, so
+    those attempts are counted toward ``MAX_ATTEMPTS``.
     """
     if post.clip_id is None:
         raise ValueError("video row has no clip_id")
-    video = await ctx.nhl.brightcove.get_video(post.clip_id)
+    try:
+        video = await ctx.nhl.brightcove.get_video(post.clip_id)
+    except httpx2.HTTPStatusError as exc:
+        if exc.response.status_code not in _NOT_READY_STATUS_CODES:
+            raise
+        logger.info(
+            "Brightcove %s for clip %s — not ready yet, retrying "
+            "without recording an attempt",
+            exc.response.status_code,
+            post.clip_id,
+        )
+        return None
     mp4 = next(
         (s for s in (video.sources or []) if s.container == "MP4"),
         None,

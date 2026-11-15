@@ -16,8 +16,9 @@ Run inside the compose network (scheduler container has DB access):
     docker compose exec scheduler python -m workers.manual post --dry-run
 
 ``status`` prints the latest recorded run per job (from ``job_runs``)
-followed by the pending posts — the quickest way to answer "are the
-workers alive and what did they last do?".
+followed by the pending posts and any defunct posts the poster gave up
+on — the quickest way to answer "are the workers alive, what did they
+last do, and is anything waiting on a human?"
 
 ``poll --date YYYY-MM-DD --force`` re-polls a *previous* day's stored
 game (plain ``--force`` only reaches today's game), which is how a
@@ -37,7 +38,9 @@ import argparse
 import asyncio
 import logging
 import os
+import sys
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 
 from config.settings import get_settings
 from db.engine import engine
@@ -51,6 +54,9 @@ from repos.posts_repo import PostsRepo
 from services.nba_service import NbaService
 from services.nhl_service import NhlService
 from utils.date import normalize_date
+
+if TYPE_CHECKING:
+    from db.models.post import Post
 
 logger = logging.getLogger(__name__)
 
@@ -108,11 +114,7 @@ async def _post(force: bool, dry_run: bool) -> None:
                     print("no pending posts")
                     return
                 for p in pending:
-                    print(
-                        f"pending: id={p.id} kind={p.kind} clip_id={p.clip_id} "
-                        f"game={p.game_id} team={p.team} attempts={p.attempts} "
-                        f"defunct={p.defunct} text={p.text!r}"
-                    )
+                    print(_post_line("pending", p))
             return
         summary = await post_pending(ctx, force=force)
         print(f"post: {summary}")
@@ -122,6 +124,22 @@ async def _post(force: bool, dry_run: bool) -> None:
         await nba.client.http.aclose()
         await nba.content.http.aclose()
         await engine.dispose()
+
+
+def _post_line(prefix: str, post: Post) -> str:
+    """One ``status``/``--dry-run`` line for a post row.
+
+    ``next_attempt_at`` is the retry-backoff deadline recorded when an
+    attempt failed (None means claimable now), so a row sitting in
+    ``pending`` can be told apart from one that is spacing out its
+    retries.
+    """
+    return (
+        f"{prefix}: id={post.id} kind={post.kind} clip_id={post.clip_id} "
+        f"game={post.game_id} team={post.team} attempts={post.attempts} "
+        f"defunct={post.defunct} next_attempt_at={post.next_attempt_at} "
+        f"text={post.text!r}"
+    )
 
 
 async def _status() -> None:
@@ -145,16 +163,30 @@ async def _status() -> None:
             print("no pending posts")
         else:
             for p in pending:
-                print(
-                    f"pending: id={p.id} kind={p.kind} clip_id={p.clip_id} "
-                    f"game={p.game_id} team={p.team} attempts={p.attempts} "
-                    f"defunct={p.defunct} text={p.text!r}"
-                )
+                print(_post_line("pending", p))
+        # The rows the poster gave up on: nothing retries them, so this
+        # is the only section that needs a human (recover by clearing
+        # defunct/attempts/next_attempt_at, then ``post --force``). A
+        # clean "none" is printed too, so its absence is a signal.
+        defunct = await posts.list_defunct(limit=10)
+        if not defunct:
+            print("no defunct posts")
+        else:
+            print(f"defunct posts ({len(defunct)}, newest first):")
+            for p in defunct:
+                print(_post_line("defunct", p) + f" last_error={p.last_error!r}")
     await engine.dispose()
 
 
 def main() -> None:
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
+    # Post text and recorded errors carry emoji (team marks, goal
+    # call-ups) that a Windows console's cp1252 cannot encode — replace
+    # the offending characters instead of letting a print die halfway
+    # through ``status``. Nothing changes where stdout is already UTF-8
+    # (the compose containers).
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="replace")
     parser = argparse.ArgumentParser(
         description="Run one poll/post pass manually (bypasses scheduler + gates)."
     )
@@ -163,7 +195,7 @@ def main() -> None:
         choices=["poll", "poll-nba", "post", "status"],
         help="poll: one NHL poll cycle; poll-nba: one NBA poll cycle; "
         "post: post oldest pending post; "
-        "status: latest job run per job + pending posts",
+        "status: latest job run per job + pending and defunct posts",
     )
     parser.add_argument(
         "--force",
