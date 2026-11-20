@@ -34,3 +34,6 @@ class NhlStatsClient:
         response = await self.http.get(f"{self.base_url}/en/team/id/{team_id}")
         teams = NhlStatsTeamResponse.model_validate(response.json()).data
         return teams[0] if teams else None
+
+    async def close(self) -> None:
+        await self.http.aclose()

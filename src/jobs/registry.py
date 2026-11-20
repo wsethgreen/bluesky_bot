@@ -36,7 +36,7 @@ class JobSpec:
 
 
 def build_job_specs(settings: Settings) -> list[JobSpec]:
-    """Build the job specs for this process from settings."""
+    """Build the job specs for this process from config."""
     return [
         JobSpec(
             id="nhl_live_poller",

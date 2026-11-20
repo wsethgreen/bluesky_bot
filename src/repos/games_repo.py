@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime as dt
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models.game import Game
@@ -67,3 +67,30 @@ class GamesRepo:
             )
         )
         return result.scalars().first()
+
+    async def get_game_for_update(self, game_id: int) -> Game | None:
+        """Load the game and hold a row lock until the session commits or rolls back."""
+        result = await self.session.execute(
+            select(Game).where(Game.game_id == game_id).with_for_update()
+        )
+        return result.scalar_one_or_none()
+
+    async def set_start_schedule_id(
+        self, game_id: int, schedule_id: str | None
+    ) -> bool:
+        """Record the schedule that launches tracking. Pass None to clear it."""
+        result = await self.session.execute(
+            update(Game)
+            .where(Game.game_id == game_id)
+            .values(start_schedule_id=schedule_id)
+        )
+        return result.rowcount > 0
+
+    async def set_poll_schedule_id(self, game_id: int, schedule_id: str | None) -> bool:
+        """Record the recurring poll schedule. Pass None to clear it after unscheduling."""
+        result = await self.session.execute(
+            update(Game)
+            .where(Game.game_id == game_id)
+            .values(poll_schedule_id=schedule_id)
+        )
+        return result.rowcount > 0

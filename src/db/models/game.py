@@ -51,6 +51,8 @@ class Game(Base):
         onupdate=func.now(),
         nullable=False,
     )
+    start_schedule_id: Mapped[str] = mapped_column(nullable=True)
+    poll_schedule_id: Mapped[str] = mapped_column(nullable=True)
 
     away_team: Mapped[Team] = relationship("Team", foreign_keys=[away_team_id])
     home_team: Mapped[Team] = relationship("Team", foreign_keys=[home_team_id])

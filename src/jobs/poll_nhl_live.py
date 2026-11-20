@@ -444,7 +444,7 @@ class PollWorker:
                 home_shots=home_shots,
                 away_shots=away_shots,
             )
-            if await posts.claim_pending(
+            if await posts.queue_pending(
                 kind=PostKind.TEXT,
                 game_id=game_id,
                 team=self._team,
@@ -458,7 +458,7 @@ class PollWorker:
         caption = PostTextBuilder.build_highlight_video_caption(self._team)
         for clip_id, event_id in clips.items():
             highlight_url = self._brightcove_video_url(clip_id)
-            if await posts.claim_pending(
+            if await posts.queue_pending(
                 kind=PostKind.VIDEO,
                 game_id=game_id,
                 team=self._team,
@@ -537,7 +537,7 @@ class PollWorker:
                 tracked_score=tracked_score,
                 opponent_score=opponent_score,
             )
-            if await posts.claim_pending(
+            if await posts.queue_pending(
                 kind=PostKind.PERIOD_END,
                 game_id=game_id,
                 team=self._team,
@@ -649,7 +649,7 @@ class PollWorker:
                 home_shots=snap.home.sog,
                 away_shots=snap.away.sog,
             )
-            if await posts.claim_pending(
+            if await posts.queue_pending(
                 kind=PostKind.PENALTY,
                 game_id=game_id,
                 team=self._team,

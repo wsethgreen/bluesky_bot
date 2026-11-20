@@ -15,8 +15,8 @@ class BlueskyClient:
     """Post text/video to Bluesky from one team's account.
 
     The caller injects the credentials — usually pulled from a Settings
-    account group (``settings.cbj`` / ``settings.cavs``) — so this class
-    has no knowledge of settings, accounts, or leagues and the same
+    account group (``config.cbj`` / ``config.cavs``) — so this class
+    has no knowledge of config, accounts, or leagues and the same
     client works for any Bluesky account.
     """
 

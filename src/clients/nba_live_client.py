@@ -22,7 +22,7 @@ class NbaLiveClient:
     unlike the today-only official feed — serves any date.
 
     ``base_url`` defaults to the ``nba.site_api_base_url`` setting
-    (read lazily, so passing ``base_url`` explicitly needs no settings);
+    (read lazily, so passing ``base_url`` explicitly needs no config);
     ``http`` defaults to a browser-UA :class:`HttpClient` (ESPN 403s
     non-browser User-Agents).
     """
@@ -64,3 +64,6 @@ class NbaLiveClient:
             params={"event": str(event_id)},
         )
         return NbaSummaryResponse.model_validate(resp.json())
+
+    async def close(self):
+        await self.http.aclose()

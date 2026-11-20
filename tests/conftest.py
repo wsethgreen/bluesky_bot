@@ -3,7 +3,7 @@
 The route tests drive the real app (``from app import app``), and
 importing it builds ``Settings`` immediately — ``db/engine`` parses
 the database URL the moment the module is imported. CI (and a fresh
-clone) has no ``.env`` file, so every settings key that has no
+clone) has no ``.env`` file, so every config key that has no
 default needs a value before any test module is collected.
 
 ``setdefault`` keeps a real exported environment's values; the suite

@@ -1,7 +1,7 @@
 """Tests for BlueskyClient: credentials are injected, and rich text
 building facets the post's hashtag.
 
-The client has no settings or account knowledge — whatever handle and
+The client has no config or account knowledge — whatever handle and
 password it is built with are exactly the ones it logs in with, so the
 caller (post_pending) owns pulling the right account from Settings.
 """
