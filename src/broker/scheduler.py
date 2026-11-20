@@ -14,7 +14,31 @@ label_schedule_source = LabelScheduleSource(broker)
 redis_schedule_source = ListRedisScheduleSource(
     redis_settings.redis_url.get_secret_value()
 )
-scheduler = TaskiqScheduler(
+
+
+class StartupSyncScheduler(TaskiqScheduler):
+    """Scheduler that kicks off the day's game sync once at startup.
+
+    ``sync_today_games`` otherwise only fires at 09:00/13:00/17:00, so a
+    deploy or restart after the last cron would never pick up that
+    night's game. Jobs are idempotent, so a redundant sync is harmless.
+    """
+
+    async def startup(self) -> None:
+        await super().startup()
+        # Imported here because tasks.sync_today_games imports this module.
+        from tasks.sync_today_games import sync_today_games
+
+        try:
+            await sync_today_games.kiq()
+            logger.info("Enqueued startup sync_today_games")
+        except Exception as err:
+            logger.exception(
+                "Failed to enqueue startup sync_today_games", error=str(err)
+            )
+
+
+scheduler = StartupSyncScheduler(
     broker=broker, sources=[label_schedule_source, redis_schedule_source]
 )
 

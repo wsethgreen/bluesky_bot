@@ -37,7 +37,7 @@ async def poll_nhl_live(game_id: int) -> None:
             grace_over = ended is not None and datetime.now(UTC) - ended > grace
 
             if state in {"postponed", "canceled"} or grace_over:
-                logger.info("Game is over; stopping poll schedule")
+                logger.info("Game is over; stopping poll schedule", game_id=game_id)
                 await redis_schedule_source.delete_schedule(game.poll_schedule_id)
                 await games_repo.set_poll_schedule_id(game_id, None)
                 await session.commit()

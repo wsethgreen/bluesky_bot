@@ -1,13 +1,10 @@
 from broker.broker import broker
 from config.settings import get_settings
 from db.session import AsyncSessionLocal
-from jobs.base import WorkerContext
+from jobs.base import WorkerContext, run_job
 from jobs.post_pending import post_pending
-from log.logger import get_logger
 from services.nba_service import NbaService
 from services.nhl_service import NhlService
-
-logger = get_logger(__name__)
 
 
 @broker.task(
@@ -22,10 +19,7 @@ async def publish_pending():
         settings=settings, nhl=nhl, nba=nba, sessions=AsyncSessionLocal
     )
     try:
-        await post_pending(context)
-    except Exception as e:
-        logger.error("Exception while publishing pending posts", error=str(e))
-        raise
+        await run_job("poster", post_pending, context)
     finally:
         await nhl.close()
         await nba.close()

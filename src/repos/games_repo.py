@@ -24,7 +24,18 @@ class GamesRepo:
         self.session = session
 
     async def upsert_game(self, game: Game) -> Game:
-        """Insert or update a game row. Returns the managed instance."""
+        """Insert or update a game row. Returns the managed instance.
+
+        Tracking columns (``start_schedule_id``, ``poll_schedule_id``,
+        ``ended_at``) are owned by the scheduler and the poller, not by
+        the league payloads that build a fresh ``Game``, so they are
+        carried over from the stored row rather than cleared.
+        """
+        existing = await self.session.get(Game, game.game_id)
+        if existing is not None:
+            game.start_schedule_id = existing.start_schedule_id
+            game.poll_schedule_id = existing.poll_schedule_id
+            game.ended_at = existing.ended_at
         return await self.session.merge(game)
 
     async def get_game(self, game_id: int) -> Game | None:
