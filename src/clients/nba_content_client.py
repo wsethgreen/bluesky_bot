@@ -19,7 +19,7 @@ class NbaContentClient:
     URLs in ``videoAssets`` (see :meth:`get_latest_videos`).
 
     ``base_url`` and ``team_id`` default to the ``nba.content_base_url`` /
-    ``nba.team_id`` settings; pass them explicitly to override (e.g. to
+    ``nba.team_id`` config; pass them explicitly to override (e.g. to
     follow a different team without changing env).
     """
 
@@ -113,3 +113,6 @@ class NbaContentClient:
             if len(items) < count:
                 return
             offset += len(items)
+
+    async def close(self):
+        await self.http.aclose()

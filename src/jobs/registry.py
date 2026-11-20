@@ -36,7 +36,7 @@ class JobSpec:
 
 
 def build_job_specs(settings: Settings) -> list[JobSpec]:
-    """Build the job specs for this process from settings."""
+    """Build the job specs for this process from config."""
     return [
         JobSpec(
             id="nhl_live_poller",
@@ -66,15 +66,10 @@ def build_job_specs(settings: Settings) -> list[JobSpec]:
 
 
 def staleness_thresholds(settings: Settings) -> dict[str, timedelta]:
-    """How long each job may go without a recorded run before its absence means trouble.
+    """How long each recorded job may go without a run before it looks stale.
 
-    3x the interval: two consecutive missed runs still look like a
-    hiccup (slow start, one misfire within grace); the third is an
-    outage. Only interval-triggered jobs are covered — a cron-triggered
-    job needs an explicit threshold here.
+    Only the jobs taskiq actually records in ``job_runs`` belong here.
+    The live pollers run per game now (started by ``sync_today_games``),
+    so they are silent on off-days by design and can't be judged this way.
     """
-    return {
-        spec.id: timedelta(minutes=spec.trigger_kwargs["minutes"]) * 3
-        for spec in build_job_specs(settings)
-        if spec.trigger == "interval"
-    }
+    return {"poster": timedelta(minutes=settings.poster.interval_minutes) * 3}
