@@ -10,6 +10,7 @@ from clients.brightcove_client import BrightcoveClient
 from clients.nhl_client import NhlClient
 from clients.nhl_stats_client import NhlStatsClient
 from config.settings import get_settings
+from db.models import Game
 from models.brightcove import BrightcoveVideo
 from models.nhl import (
     NhlLiveSnapshot,
@@ -61,6 +62,11 @@ class NhlService:
             .date()
             .isoformat()
         )
+
+    async def close(self) -> None:
+        await self.client.close()
+        await self.stats.close()
+        await self.brightcove.close()
 
     async def get_schedule_by_date(
         self, date: str | datetime.date | None = None
@@ -320,3 +326,32 @@ class NhlService:
             return []
         goals = await self.get_goals_for_game(game.id)
         return await self.get_goal_videos_for_goals(goals)
+
+    @staticmethod
+    def build_game(game: NhlScheduleGame) -> Game:
+        if not game.id:
+            raise ValueError("Game ID cannot be None")
+        if not game.away_team or not game.away_team.id:
+            raise ValueError("Away Team ID cannot be None")
+        if not game.home_team or not game.home_team.id:
+            raise ValueError("Home Team ID cannot be None")
+
+        if game.start_time_utc:
+            start = datetime.datetime.fromisoformat(game.start_time_utc)
+            if start.tzinfo is None:
+                start = start.replace(tzinfo=datetime.UTC)
+        else:
+            start = datetime.datetime.now(datetime.UTC)
+        return Game(
+            game_id=game.id,
+            league="nhl",
+            season=game.season or 0,
+            game_type=game.game_type or 0,
+            start_time=start,
+            game_state=game.game_state,
+            game_schedule_state=game.game_schedule_state,
+            away_team_id=game.away_team.id,
+            away_team_score=game.away_team.score or 0,
+            home_team_id=game.home_team.id,
+            home_team_score=game.home_team.score or 0,
+        )

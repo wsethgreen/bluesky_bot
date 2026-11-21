@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 # so bootstrap the same here instead of using `src.`-prefixed imports.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from config.settings import get_settings
+from config.settings import get_db_settings
 from db.models import Base
 
 # this is the Alembic Config object, which provides
@@ -25,7 +25,7 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-settings = get_settings()
+settings = get_db_settings()
 
 # Use the db migrations url for alembic
 config.set_main_option("sqlalchemy.url", settings.db_migration_url)

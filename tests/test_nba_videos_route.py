@@ -195,7 +195,7 @@ class StubContentClient:
 
 class TestNbaServiceTeamVideos:
     def test_passes_category_slug_to_the_content_client(self) -> None:
-        # Bypass __init__: it builds real API clients from settings, and
+        # Bypass __init__: it builds real API clients from config, and
         # the method under test only needs the stub content client.
         service = NbaService.__new__(NbaService)
         content = StubContentClient()

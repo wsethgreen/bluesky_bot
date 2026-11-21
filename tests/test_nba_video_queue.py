@@ -215,7 +215,7 @@ class StubContent:
 def make_worker(
     items: list[NbaContentVideo], *, grace: timedelta = timedelta(minutes=180)
 ) -> NbaPollWorker:
-    # Bypass __init__: it builds real API clients from settings; the
+    # Bypass __init__: it builds real API clients from config; the
     # queue path only needs the stub content client and the knobs.
     worker = NbaPollWorker.__new__(NbaPollWorker)
     worker._nba = SimpleNamespace(content=StubContent(items))  # type: ignore[assignment]

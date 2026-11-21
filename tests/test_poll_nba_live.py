@@ -5,7 +5,7 @@ Payload shapes mirror ESPN's real payloads (verified against
 ``site.api.espn.com`` live data): string ids/scores, ``status.type``
 state words, season objects whose ``year`` is the season *end*, and a
 summary whose ``leaders`` are grouped per team. Everything under test
-is pure — no DB, no network, no settings.
+is pure — no DB, no network, no config.
 """
 
 import asyncio
@@ -733,7 +733,7 @@ class TestQueueQuarterEnds:
 
     @staticmethod
     def make_worker(summary: NbaSummaryResponse | None = None) -> NbaPollWorker:
-        # Bypass __init__: it builds real API clients from settings;
+        # Bypass __init__: it builds real API clients from config;
         # the queue path only needs the summary stub and the team.
         if summary is None:
             summary = NbaSummaryResponse.model_validate(make_summary_payload())

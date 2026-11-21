@@ -76,3 +76,6 @@ class NhlClient:
         don't wade through the full landing shape.
         """
         return NhlPlayer.model_validate(await self.get_player(player_id))
+
+    async def close(self):
+        await self.http.aclose()

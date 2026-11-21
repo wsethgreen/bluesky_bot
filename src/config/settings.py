@@ -1,15 +1,15 @@
-"""Application settings loaded from environment / .env file.
+"""Application config loaded from environment / .env file.
 
-Config is grouped by concern — ``settings.nhl.*``, ``settings.nba.*``,
-``settings.poller.*``, ``settings.poster.*``, ``settings.cbj.*``,
-``settings.cavs.*`` — instead of one flat
+Config is grouped by concern — ``config.nhl.*``, ``config.nba.*``,
+``config.poller.*``, ``config.poster.*``, ``config.cbj.*``,
+``config.cavs.*`` — instead of one flat
 class. Each group is its own ``BaseSettings`` that reads the same
 ``.env`` file under an ``env_prefix`` matching the flat keys already in
 use (``NHL_TEAM_ABBREVIATION``, ``POLL_INTERVAL_MINUTES``, ...), so the
 grouping is Python-side only and no environment variable is renamed.
 
-Each Bluesky bot account is its own group too — ``settings.cbj.*`` and
-``settings.cavs.*`` read ``CBJ_BLUESKY_*`` / ``CAVS_BLUESKY_*`` — so the
+Each Bluesky bot account is its own group too — ``config.cbj.*`` and
+``config.cavs.*`` read ``CBJ_BLUESKY_*`` / ``CAVS_BLUESKY_*`` — so the
 NHL and NBA bots post from separate accounts.
 
 Shared concerns (Brightcove, HTTP tuning, DB, app) stay on the
@@ -19,12 +19,12 @@ tuning knob but kept top-level alongside the other scheduler knobs).
 
 from functools import lru_cache
 
-from pydantic import Field, SecretStr, computed_field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 def _group_config(env_prefix: str) -> SettingsConfigDict:
-    """model_config for a nested settings group.
+    """model_config for a nested config group.
 
     Groups are built by the parent via ``default_factory`` (the parent's
     env source does not populate nested models without
@@ -194,19 +194,6 @@ class Settings(BaseSettings):
     http_max_retries: int = Field(default=3, ge=0)
     http_backoff_factor: float = Field(default=0.5, ge=0)
 
-    # Database
-    db_user: str
-    db_password: SecretStr
-    db_name: str
-    db_host: str
-    db_port: int = Field(default=5432)
-
-    @computed_field
-    @property
-    def db_migration_url(self) -> str:
-        # Honors db_host: localhost on the host, `db` inside compose.
-        return f"postgresql+asyncpg://{self.db_user}:{self.db_password.get_secret_value()}@{self.db_host}:{self.db_port}/{self.db_name}"
-
     # App
     log_level: str = Field(default="INFO")
     env: str = Field(
@@ -242,6 +229,57 @@ class Settings(BaseSettings):
         ge=1,
         description="job_runs rows older than this are pruned opportunistically",
     )
+
+
+class DbSettings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        case_sensitive=False,
+    )
+
+    db_user: str
+    db_password: SecretStr
+    db_name: str
+    db_host: str
+    db_port: int = Field(default=5432)
+
+    @property
+    def db_migration_url(self) -> str:
+        # Honors db_host: localhost on the host, `db` inside compose.
+        return f"postgresql+asyncpg://{self.db_user}:{self.db_password.get_secret_value()}@{self.db_host}:{self.db_port}/{self.db_name}"
+
+
+class RedisSettings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        case_sensitive=False,
+    )
+
+    redis_host: str = Field(default="localhost")
+    redis_port: int = Field(default=6379)
+    redis_db: int = Field(default=0)
+    redis_password: SecretStr
+
+    @property
+    def redis_url(self) -> SecretStr:
+        password = self.redis_password.get_secret_value()
+        return SecretStr(
+            f"redis://:{password}@{self.redis_host}:{self.redis_port}/{self.redis_db}"
+        )
+
+
+@lru_cache
+def get_db_settings() -> DbSettings:
+    return DbSettings()
+
+
+@lru_cache
+def get_redis_settings() -> RedisSettings:
+    return RedisSettings()
 
 
 @lru_cache

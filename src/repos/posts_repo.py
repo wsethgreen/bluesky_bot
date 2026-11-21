@@ -29,7 +29,7 @@ class PostsRepo:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def claim_pending(
+    async def queue_pending(
         self,
         *,
         kind: PostKind,

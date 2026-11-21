@@ -62,12 +62,12 @@ async def post_pending(ctx: WorkerContext, *, force: bool = False) -> str:
     the plain-text branch below; only video rows need clip resolution.
 
     ``force`` (manual runner only) bypasses the posting window
-    (``settings.poster.window_hours``) entirely — both the claim's
+    (``config.poster.window_hours``) entirely — both the claim's
     window filter and the inline re-check below — and the retry
     backoff on a previously failed row, so late posts from a finished
     game (or one that just failed an attempt) can still go out.
 
-    ``ctx.settings.env == "local"`` logs the post instead of publishing
+    ``ctx.config.env == "local"`` logs the post instead of publishing
     it (see module docstring); without ``force`` the window still
     applies, so ``force`` remains the way to drain rows from outside it.
 
@@ -84,6 +84,7 @@ async def post_pending(ctx: WorkerContext, *, force: bool = False) -> str:
             limit=1, window_hours=window_hours, force=force
         )
         if not pending:
+            logger.info("No pending posts")
             await session.commit()
             waiting = await posts.count_pending()
             if waiting:
@@ -349,8 +350,8 @@ def _account_for(settings: Settings, league: str) -> BlueskyAccountSettings:
     mix-up this exists to prevent, so — like ``_resolver_for`` — an
     unregistered league raises instead of falling back to a default
     account. New leagues register in the local mapping below, pairing
-    the league with its Settings account group (``settings.cbj`` for
-    the CBJ/NHL bot, ``settings.cavs`` for the Cavs/NBA bot).
+    the league with its Settings account group (``config.cbj`` for
+    the CBJ/NHL bot, ``config.cavs`` for the Cavs/NBA bot).
     """
     groups: dict[str, BlueskyAccountSettings] = {
         "nhl": settings.cbj,

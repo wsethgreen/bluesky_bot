@@ -19,6 +19,29 @@ services:
       retries: 5
       start_period: 20s
 
+  redis:
+    image: redis:8.10.3-alpine
+    environment:
+      # Lets redis-cli authenticate without putting the password on its command line
+      REDISCLI_AUTH: ${REDIS_PASSWORD}
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --requirepass
+      - ${REDIS_PASSWORD}
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
   migrate:
     build: .
     depends_on:
@@ -42,17 +65,18 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      redis:
+        condition: service_healthy
     ports:
       - "8000:8000"
-    # Values come from your local .env (never baked into the image).
     env_file:
       - .env
     environment:
-      # Single scheduler owns timers; API never runs background jobs.
       RUN_WORKERS: "0"
       # .env sets DB_HOST=localhost for host-side runs; inside the compose
       # network the DB is reachable as `db`.
       DB_HOST: db
+      REDIS_HOST: redis
 
     restart: unless-stopped
     command: ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", "--app-dir", "src"]
@@ -67,6 +91,37 @@ services:
       interval: 30s
       start_period: 20s
 
+  worker:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      DB_HOST: db
+      REDIS_HOST: redis
+    command:
+      - taskiq
+      - worker
+      - --app-dir
+      - src
+      - --max-async-tasks
+      - "8"
+      - --shutdown-timeout
+      - "60"
+      - broker.broker:broker
+      - tasks.poll_nhl_live
+      - tasks.poll_nba_live
+      - tasks.publish_pending
+      - tasks.sync_today_games
+      - tasks.start_task
+    restart: unless-stopped
+
   scheduler:
     build: .
     depends_on:
@@ -74,15 +129,24 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      redis:
+        condition: service_healthy
     env_file:
       - .env
     environment:
-      RUN_WORKERS: "1"
       DB_HOST: db
+      REDIS_HOST: redis
+    command:
+      - taskiq
+      - scheduler
+      - --app-dir
+      - src
+      - broker.scheduler:scheduler
+      - tasks.sync_today_games
+      - tasks.publish_pending
     restart: unless-stopped
-    # Singleton: never scale past 1. Owns all timers: daily game-day check
-    # gates the poll/poster intervals (paused on off-days).
-    command: ["python", "-m", "workers.run", "--scheduler"]
 
 volumes:
   pgdata:
+  redis-data:
+    driver: local

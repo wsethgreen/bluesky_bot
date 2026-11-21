@@ -65,7 +65,7 @@ class StubClient:
 
 
 def service() -> NhlService:
-    # Bypass __init__: it builds real API clients from settings, and
+    # Bypass __init__: it builds real API clients from config, and
     # the methods under test only need the stub client + translator.
     svc = NhlService.__new__(NhlService)
     svc.client = StubClient(PBP)  # type: ignore[assignment]

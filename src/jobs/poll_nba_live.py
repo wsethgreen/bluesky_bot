@@ -656,7 +656,7 @@ class NbaPollWorker:
                 opponent_score=opponent_score,
                 campaign_tag=campaign_tag,
             )
-            if await posts.claim_pending(
+            if await posts.queue_pending(
                 kind=PostKind.PERIOD_END,
                 game_id=game_id,
                 team=self._team,
@@ -738,7 +738,7 @@ class NbaPollWorker:
             if len(description) > budget:
                 description = description[: budget - 1].rstrip() + "…"
             caption = f"{description}{suffix}"
-            if await posts.claim_pending(
+            if await posts.queue_pending(
                 kind=PostKind.VIDEO,
                 game_id=row.game_id,
                 team=self._team,

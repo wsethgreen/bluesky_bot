@@ -40,3 +40,6 @@ class BrightcoveClient:
             headers=self._headers,
         )
         return BrightcoveVideo.model_validate(response.json())
+
+    async def close(self):
+        await self.http.aclose()
