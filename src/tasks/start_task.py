@@ -28,6 +28,7 @@ async def _start_tracking(game_id: int, poll_task) -> None:
         await repo.set_poll_schedule_id(game_id, poll_id)
         await repo.set_start_schedule_id(game_id, None)  # timer has fired
         await session.commit()  # releases the lock
+        logger.info("Polling started", game_id=game_id, poll_id=poll_id)
 
     await poll_task.kiq(game_id)
 
