@@ -17,26 +17,28 @@ redis_schedule_source = ListRedisScheduleSource(
 
 
 class StartupSyncScheduler(TaskiqScheduler):
-    """Scheduler that kicks off the day's game sync once at startup.
+    """Scheduler that kicks off the day's game syncs once at startup.
 
-    ``sync_today_games`` otherwise only fires at 09:00/13:00/17:00, so a
-    deploy or restart after the last cron would never pick up that
-    night's game. Jobs are idempotent, so a redundant sync is harmless.
+    The sync tasks otherwise only fire at 09:00/13:00/17:00, so a deploy
+    or restart after the last cron would never pick up that night's game.
+    Jobs are idempotent, so a redundant sync is harmless.
     """
 
     async def startup(self) -> None:
         configure_logging(level=get_settings().log_level)
         await super().startup()
         # Imported here because tasks.sync_today_games imports this module.
-        from tasks.sync_today_games import sync_today_games
+        from tasks.sync_today_games import (
+            sync_today_nba_games,
+            sync_today_nhl_games,
+        )
 
         try:
-            await sync_today_games.kiq()
-            logger.info("Enqueued startup sync_today_games")
+            await sync_today_nhl_games.kiq()
+            await sync_today_nba_games.kiq()
+            logger.info("Enqueued startup game syncs")
         except Exception as err:
-            logger.exception(
-                "Failed to enqueue startup sync_today_games", error=str(err)
-            )
+            logger.exception("Failed to enqueue startup game syncs", error=str(err))
 
 
 scheduler = StartupSyncScheduler(

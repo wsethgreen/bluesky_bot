@@ -69,7 +69,8 @@ def staleness_thresholds(settings: Settings) -> dict[str, timedelta]:
     """How long each recorded job may go without a run before it looks stale.
 
     Only the jobs taskiq actually records in ``job_runs`` belong here.
-    The live pollers run per game now (started by ``sync_today_games``),
-    so they are silent on off-days by design and can't be judged this way.
+    The live pollers run per game now (started by the daily
+    ``sync_today_nhl_games`` / ``sync_today_nba_games`` tasks), so they are
+    silent on off-days by design and can't be judged this way.
     """
     return {"poster": timedelta(minutes=settings.poster.interval_minutes) * 3}
