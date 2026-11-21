@@ -31,7 +31,6 @@ are not touched in that mode.
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
@@ -41,6 +40,7 @@ import httpx2
 from clients.bluesky_client import BlueskyClient
 from clients.http_client import HttpClient
 from db.models.game import Game
+from log.logger import get_logger
 from models.bluesky import BlueskyPostRef
 from models.enum import PostKind
 from repos.posts_repo import MAX_ATTEMPTS, PostsRepo
@@ -50,7 +50,7 @@ if TYPE_CHECKING:
     from db.models.post import Post
     from jobs.base import WorkerContext
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 JOB_ID = "poster"
 
@@ -133,6 +133,14 @@ async def post_pending(ctx: WorkerContext, *, force: bool = False) -> str:
                 account_password=creds.bluesky_app_password.get_secret_value(),
             )
 
+            logger.info(
+                "Found post",
+                league=game.league,
+                post_id=post.id,
+                post_type=post.kind,
+                post_text=post.text,
+            )
+
             if post.kind == PostKind.VIDEO:
                 quote = await _quoted_text_ref(posts, post)
 
@@ -162,6 +170,14 @@ async def post_pending(ctx: WorkerContext, *, force: bool = False) -> str:
 
             await posts.mark_posted(post.id, uri=ref.uri, cid=ref.cid)
             await session.commit()
+            logger.info(
+                "Posted",
+                post_id=post.id,
+                post_type=post.kind,
+                league=game.league,
+                game_id=post.game_id,
+                uri=ref.uri,
+            )
             return f"posted {label} ({ref.uri})"
 
         except Exception as exc:

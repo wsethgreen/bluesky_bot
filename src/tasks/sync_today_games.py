@@ -37,11 +37,25 @@ async def _schedule_tracking(
 ) -> None:
     """(Re)arm the timer that starts live polling at game time."""
     if game.start_schedule_id:  # replace a timer from an earlier sync
+        logger.info(
+            "Replacing tracking timer",
+            game_id=game.game_id,
+            old_schedule_id=game.start_schedule_id,
+        )
         await redis_schedule_source.delete_schedule(game.start_schedule_id)
 
     run_at = max(game.start_time, datetime.now(UTC) + timedelta(seconds=5))
     schedule_id = await schedule_task_by_time(tracking_task, run_at, game.game_id)
     await games_repo.set_start_schedule_id(game.game_id, schedule_id)
+    logger.info(
+        "Tracking scheduled",
+        game_id=game.game_id,
+        league=game.league,
+        away_team_id=game.away_team_id,
+        home_team_id=game.home_team_id,
+        run_at=run_at.isoformat(),
+        schedule_id=schedule_id,
+    )
 
 
 @broker.task(task_name="sync_today_nhl_games", schedule=SYNC_SCHEDULE)
@@ -55,6 +69,7 @@ async def sync_today_nhl_games() -> None:
 
             scheduled = await nhl_service.get_team_game_on_date(today)
             if scheduled is None:
+                logger.info("No NHL game today", date=today.isoformat())
                 return
             logger.info(
                 "Found NHL game",
@@ -75,6 +90,13 @@ async def sync_today_nhl_games() -> None:
             game = await games_repo.upsert_game(nhl_service.build_game(scheduled))
             await session.commit()
             if not _needs_tracking(game):
+                logger.info(
+                    "Tracking skipped",
+                    game_id=game.game_id,
+                    league=game.league,
+                    game_state=game.game_state,
+                    poll_schedule_id=game.poll_schedule_id,
+                )
                 return
 
             await _schedule_tracking(games_repo, game, start_nhl_game_tracking)
@@ -96,6 +118,7 @@ async def sync_today_nba_games() -> None:
 
             scheduled = await nba_service.get_team_game_on_date(today)
             if scheduled is None:
+                logger.info("No NBA game today", date=today.isoformat())
                 return
             logger.info(
                 "Found NBA game",
@@ -119,6 +142,13 @@ async def sync_today_nba_games() -> None:
             game = await games_repo.upsert_game(nba_service.build_game(scheduled))
             await session.commit()
             if not _needs_tracking(game):
+                logger.info(
+                    "Tracking skipped",
+                    game_id=game.game_id,
+                    league=game.league,
+                    game_state=game.game_state,
+                    poll_schedule_id=game.poll_schedule_id,
+                )
                 return
 
             await _schedule_tracking(games_repo, game, start_nba_game_tracking)
