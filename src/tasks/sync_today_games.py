@@ -32,7 +32,7 @@ async def sync_today_games() -> None:
         games_repo = GamesRepo(session)
         teams_repo = TeamsRepo(session)
 
-        for name, service_cls, tracking_task in SPORTS:
+        for league, service_cls, tracking_task in SPORTS:
             service = None
             try:
                 service = service_cls()
@@ -40,7 +40,14 @@ async def sync_today_games() -> None:
                 if not scheduled:
                     continue
 
-                if name == "nba":
+                if league == "nba":
+                    logger.info(
+                        "Found game",
+                        league=league,
+                        date=today,
+                        home_team=scheduled.home_competitor,
+                        away_team=scheduled.away_competitor,
+                    )
                     for comp in (scheduled.home_competitor, scheduled.away_competitor):
                         info = comp.team if comp else None
                         if info is None or info.id is None or not info.abbreviation:
@@ -52,6 +59,13 @@ async def sync_today_games() -> None:
                         )
                     await session.flush()  # teams before the games FK insert
                 else:
+                    logger.info(
+                        "Found game",
+                        league=league,
+                        date=today,
+                        home_team=scheduled.home_team,
+                        away_team=scheduled.away_team,
+                    )
                     for team in (scheduled.home_team, scheduled.away_team):
                         if team is None or team.id is None:
                             continue
@@ -81,7 +95,7 @@ async def sync_today_games() -> None:
                 await session.commit()
             except Exception as e:
                 await session.rollback()
-                logger.exception(f"sync_today_games failed for {name}", error=str(e))
+                logger.exception(f"sync_today_games failed for {league}", error=str(e))
             finally:
                 if service is not None:
                     await service.close()

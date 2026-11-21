@@ -5,8 +5,8 @@ from taskiq.schedule_sources import LabelScheduleSource
 from taskiq_redis import ListRedisScheduleSource
 
 from broker.broker import broker
-from config.settings import get_redis_settings
-from log.logger import get_logger
+from config.settings import get_redis_settings, get_settings
+from log.logger import configure_logging, get_logger
 
 logger = get_logger(__name__)
 redis_settings = get_redis_settings()
@@ -25,6 +25,7 @@ class StartupSyncScheduler(TaskiqScheduler):
     """
 
     async def startup(self) -> None:
+        configure_logging(level=get_settings().log_level)
         await super().startup()
         # Imported here because tasks.sync_today_games imports this module.
         from tasks.sync_today_games import sync_today_games

@@ -41,6 +41,11 @@ async def poll_nba_live(game_id: int) -> None:
                 await games_repo.set_poll_schedule_id(game_id, None)
                 await session.commit()
                 return
+
+        logger.info(
+            "Polling nba live game", game_id=game_id, schedule_id=game.poll_schedule_id
+        )
+
         await poll_nba_live_job(ctx=context)
     except Exception as e:
         logger.error("Exception while polling nba live game", error=str(e))

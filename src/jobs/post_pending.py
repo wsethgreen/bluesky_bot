@@ -84,6 +84,7 @@ async def post_pending(ctx: WorkerContext, *, force: bool = False) -> str:
             limit=1, window_hours=window_hours, force=force
         )
         if not pending:
+            logger.info("No pending posts")
             await session.commit()
             waiting = await posts.count_pending()
             if waiting:

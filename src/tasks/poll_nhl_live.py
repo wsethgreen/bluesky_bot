@@ -43,6 +43,10 @@ async def poll_nhl_live(game_id: int) -> None:
                 await session.commit()
                 return
 
+        logger.info(
+            "Polling nhl live game", game_id=game_id, schedule_id=game.poll_schedule_id
+        )
+
         await poll_nhl_live_job(ctx=context)
     except Exception as e:
         logger.error("Exception while polling nhl live game", error=str(e))
